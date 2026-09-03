@@ -4,6 +4,7 @@ pydantic>=2.8.0
 sqlalchemy>=2.0.30
 google-genai>=0.1.1
 pyjwt>=2.8.0
+passlib[bcrypt]>=1.7.4
 bcrypt>=4.0.0
 pillow>=10.4.0
 python-multipart>=0.0.9
