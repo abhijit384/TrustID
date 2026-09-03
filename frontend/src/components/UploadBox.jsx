@@ -29,12 +29,14 @@ export const UploadBox = ({ onDocumentSelected, onAnalyze, onClear, isAnalyzing 
     }
   };
 
-  const handleChange = (e) => {
+  const handleFileChange = (e) => {
     e.preventDefault();
     if (e.target.files && e.target.files[0]) {
       handleFile(e.target.files[0]);
     }
   };
+
+  const handleChange = handleFileChange;
 
   const handleFile = (file) => {
     setSelectedSample(null);

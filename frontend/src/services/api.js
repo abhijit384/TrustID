@@ -1,13 +1,16 @@
 import axios from 'axios';
 
-export const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || 'http://localhost:8000';
+const envApiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
+const isProdBrowser = typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
+
+export const API_BASE_URL = envApiUrl || (isProdBrowser ? 'https://trustid-y2fd.onrender.com' : 'http://localhost:8000');
 
 export const getMediaUrl = (path) => {
   if (!path) return null;
   if (path.startsWith('http://') || path.startsWith('https://') || path.startsWith('data:') || path.startsWith('blob:')) {
     return path;
   }
-  const apiBase = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '').replace(/\/+$/, '');
+  const apiBase = (API_BASE_URL || '').replace(/\/+$/, '');
   const cleanPath = path.startsWith('/') ? path : `/${path}`;
   return apiBase ? `${apiBase}${cleanPath}` : cleanPath;
 };

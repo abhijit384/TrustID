@@ -38,15 +38,23 @@ app = FastAPI(
 )
 
 # CORS Configuration
+default_origins = [
+    "https://trust-id-sigma.vercel.app",
+    "http://localhost:5173",
+    "http://localhost:3000",
+    "http://127.0.0.1:5173",
+    "http://127.0.0.1:3000",
+]
 _cors_env = os.getenv("CORS_ORIGINS", "")
-if _cors_env and _cors_env.strip() != "*":
-    allowed_origins = [orig.strip() for orig in _cors_env.split(",") if orig.strip()]
-else:
-    allowed_origins = ["*"]
+if _cors_env:
+    for orig in _cors_env.split(","):
+        o = orig.strip()
+        if o and o not in default_origins:
+            default_origins.append(o)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=allowed_origins,
+    allow_origins=default_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

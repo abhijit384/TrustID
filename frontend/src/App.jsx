@@ -76,6 +76,12 @@ export default function App() {
             </ProtectedLayout>
           } />
 
+          <Route path="/new-screening" element={
+            <ProtectedLayout>
+              <NewScreening />
+            </ProtectedLayout>
+          } />
+
           <Route path="/analysis/:screeningId" element={
             <ProtectedLayout>
               <Analysis />
@@ -103,6 +109,12 @@ export default function App() {
 
           {/* Screening / Analysis History */}
           <Route path="/history" element={
+            <ProtectedLayout>
+              <History />
+            </ProtectedLayout>
+          } />
+
+          <Route path="/my-activity" element={
             <ProtectedLayout>
               <History />
             </ProtectedLayout>
