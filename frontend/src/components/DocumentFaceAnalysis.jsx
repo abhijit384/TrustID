@@ -14,11 +14,11 @@ import {
 import { getMediaUrl } from '../services/api';
 
 export const DocumentFaceAnalysis = ({
-  faceDetected = true,
-  faceQuality = "Good",
-  photoRegionDetected = true,
-  status = "No Obvious Anomaly",
-  confidence = 0.91,
+  faceDetected = false,
+  faceQuality = "Inconclusive",
+  photoRegionDetected = false,
+  status = "Inconclusive",
+  confidence = 0.95,
   indicators = [],
   explanation = "",
   cropUrl = null,
@@ -26,9 +26,8 @@ export const DocumentFaceAnalysis = ({
   box = null
 }) => {
   const resolvedCropUrl = getMediaUrl(cropUrl);
-  const resolvedOriginalUrl = getMediaUrl(originalUrl);
 
-  const isNoFace = !faceDetected || status?.toLowerCase().includes("no face");
+  const isNoFace = !faceDetected || status?.toLowerCase().includes("no face") || status?.toLowerCase() === "inconclusive";
 
   const isExplicitReal = Boolean(
     status?.toLowerCase().includes("real") || 
@@ -43,17 +42,17 @@ export const DocumentFaceAnalysis = ({
   );
 
   const isFakePhoto = !isNoFace && !isExplicitReal && isExplicitFake;
-  const isGoodQuality = faceQuality?.toLowerCase() === "good";
-  const confPct = Math.round((confidence || 0.94) * 100);
+  const isGoodQuality = faceDetected && faceQuality?.toLowerCase() === "good";
+  const confPct = Math.round((confidence || 0.95) * 100);
 
   const displayStatus = isNoFace
-    ? "No Face Detected"
+    ? "Inconclusive (No Face Detected)"
     : isFakePhoto
       ? "Fake / Tampered Photo"
       : "Real Photo";
 
   const displayExplanation = isNoFace
-    ? "No facial photograph detected in the uploaded document."
+    ? "No human face was detected in the submitted document."
     : explanation || "The document portrait photograph was verified authentic with clean boundaries and consistent substrate texture.";
 
   return (
@@ -94,43 +93,19 @@ export const DocumentFaceAnalysis = ({
             Extracted Document Portrait
           </span>
           <div className="relative rounded-xl overflow-hidden border border-slate-800 bg-slate-950/80 flex items-center justify-center min-h-[200px] group">
-            {resolvedCropUrl && faceDetected ? (
+            {faceDetected && resolvedCropUrl ? (
               <img 
                 src={resolvedCropUrl} 
                 alt="Document Face Crop" 
                 className="w-full h-52 object-contain p-2" 
-                onError={(e) => {
-                  if (resolvedOriginalUrl && e.target.src !== resolvedOriginalUrl) {
-                    e.target.src = resolvedOriginalUrl;
-                  }
-                }}
               />
-            ) : resolvedOriginalUrl && faceDetected ? (
-              <div className="relative w-full h-52 flex items-center justify-center bg-slate-900/60 p-2">
-                <img 
-                  src={resolvedOriginalUrl} 
-                  alt="Document Thumbnail" 
-                  className="max-h-full max-w-full object-contain rounded-lg opacity-80" 
-                />
-                {box && (
-                  <div 
-                    className="absolute border-2 border-cyan-400 bg-cyan-400/15 rounded pointer-events-none"
-                    style={{
-                      top: `${(box.ymin || 0.15) * 100}%`,
-                      left: `${(box.xmin || 0.10) * 100}%`,
-                      width: `${((box.xmax || 0.35) - (box.xmin || 0.10)) * 100}%`,
-                      height: `${((box.ymax || 0.35) - (box.ymin || 0.15)) * 100}%`
-                    }}
-                  />
-                )}
-              </div>
             ) : (
               <div className="text-center p-6 text-slate-400 space-y-2">
                 <AlertTriangle className="w-8 h-8 mx-auto text-amber-400" />
                 <p className="text-xs font-semibold text-slate-300">
                   No facial photograph detected in the uploaded document.
                 </p>
-                <p className="text-[10px] text-slate-500">Non-photo credential or unreadable portrait</p>
+                <p className="text-[10px] text-slate-500">Non-photo credential or document without a portrait</p>
               </div>
             )}
 

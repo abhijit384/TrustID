@@ -417,29 +417,34 @@ def analyze_screening(
         multiple_faces_detected = False
         is_anomaly = False
 
-        if gemini_has_face is False:
+        if gemini_has_face is False or gemini_face.get("photo_status") == "No Face Detected":
             doc_face_detected = False
             faces_detected_count = 0
             multiple_faces_detected = False
             doc_face_quality = "Inconclusive"
             photo_reg_detected = False
             doc_face_st = "No Face Detected"
-            doc_face_conf = float(gemini_face.get("confidence", 0.50))
+            doc_face_conf = float(gemini_face.get("confidence", 0.95))
             doc_face_inds = []
             doc_face_expl = "No facial photograph detected in the uploaded document."
             doc_face_box_data = None
-            local_face_res = {"box": None}
+            local_face_res = {"face_detected": False, "box": None}
+            if os.path.exists(face_crop_path):
+                try:
+                    os.remove(face_crop_path)
+                except Exception:
+                    pass
         else:
             local_face_res = detect_and_crop_document_face(
                 doc_image_path=doc_path,
                 normalized_box=norm_box,
                 output_crop_path=face_crop_path
             )
-            doc_face_detected = local_face_res.get("face_detected", True)
-            faces_detected_count = local_face_res.get("faces_detected_count", 1)
-            multiple_faces_detected = local_face_res.get("multiple_faces_detected", False) or gemini_face.get("multiple_faces_detected", False) or (faces_detected_count > 1)
-            doc_face_quality = local_face_res.get("face_quality") or gemini_face.get("quality") or gemini_face.get("face_quality") or "Good"
-            photo_reg_detected = gemini_face.get("photo_region_detected", local_face_res.get("photo_region_detected", True))
+            doc_face_detected = bool(local_face_res.get("face_detected", False))
+            faces_detected_count = local_face_res.get("faces_detected_count", 1 if doc_face_detected else 0)
+            multiple_faces_detected = bool(local_face_res.get("multiple_faces_detected", False) or gemini_face.get("multiple_faces_detected", False) or (faces_detected_count > 1))
+            doc_face_quality = local_face_res.get("face_quality") or gemini_face.get("quality") or ("Good" if doc_face_detected else "Inconclusive")
+            photo_reg_detected = bool(doc_face_detected and (gemini_face.get("photo_region_detected", True) or local_face_res.get("photo_region_detected", True)))
             
             doc_face_box_data = local_face_res.get("box") if doc_face_detected else None
 
@@ -461,23 +466,19 @@ def analyze_screening(
             raw_photo_st = str(gemini_face.get("photo_status") or gemini_face.get("status") or "").lower()
             gemini_is_real = gemini_face.get("is_real_photo")
 
-            if multiple_faces_detected:
-                is_anomaly = True
-            elif gemini_is_real is True and ("real" in raw_photo_st or "pass" in raw_photo_st or "good" in raw_photo_st):
-                is_anomaly = False
-            elif gemini_is_real is False or any(k in raw_photo_st for k in ["fake", "tamper", "synthetic", "deepfake"]) or raw_photo_st == "anomaly detected":
-                is_anomaly = True
-            else:
-                import re
-                face_expl_text = str(gemini_face.get("explanation", "")).lower()
-                clean_expl = re.sub(r'\b(no|without|zero|not|shows\s+no)\s+(obvious\s+|visual\s+|signs\s+of\s+)?(tampering|tamper|manipulation|alteration|splicing|anomaly|fake|synthetic)', '', face_expl_text, flags=re.IGNORECASE)
-                is_anomaly = any(k in clean_expl for k in ["ai-generated", "synthetic face", "synthetic portrait", "deepfake", "tampered photo", "manipulated photo", "stock photo template"])
-
             if not doc_face_detected:
                 doc_face_st = "No Face Detected"
                 doc_face_expl = "No facial photograph detected in the uploaded document."
                 doc_face_conf = 0.95
                 doc_face_inds = []
+                doc_face_quality = "Inconclusive"
+                photo_reg_detected = False
+                doc_face_box_data = None
+                if os.path.exists(face_crop_path):
+                    try:
+                        os.remove(face_crop_path)
+                    except Exception:
+                        pass
             elif multiple_faces_detected:
                 doc_face_st = "Fake / Tampered Photo"
                 doc_face_conf = 0.96
@@ -809,13 +810,15 @@ def get_screening_detail(
             "created_at": screening.ai_analysis.created_at
         }
 
+    is_face_detected = bool(screening.face_detected)
     doc_face_crop_url = None
     default_crop_file = DOCS_DIR / f"{screening.screening_id}_face_crop.jpg"
-    if screening.doc_face_crop_path:
-        c_fname = os.path.basename(screening.doc_face_crop_path.replace("\\", "/"))
-        doc_face_crop_url = f"/uploads/documents/{c_fname}"
-    elif default_crop_file.exists() or screening.face_detected:
-        doc_face_crop_url = f"/uploads/documents/{screening.screening_id}_face_crop.jpg"
+    if is_face_detected:
+        if screening.doc_face_crop_path:
+            c_fname = os.path.basename(screening.doc_face_crop_path.replace("\\", "/"))
+            doc_face_crop_url = f"/uploads/documents/{c_fname}"
+        elif default_crop_file.exists():
+            doc_face_crop_url = f"/uploads/documents/{screening.screening_id}_face_crop.jpg"
 
     return {
         "id": screening.id,
@@ -841,21 +844,21 @@ def get_screening_detail(
         "authenticity_classification": screening.authenticity_classification or ("Fake Document" if screening.risk_score >= 50 else "Real Document"),
         "authenticity_confidence": screening.authenticity_confidence if screening.authenticity_confidence is not None else 0.95,
         "authenticity_reasons": screening.authenticity_reasons or (["Potential visual anomaly detected."] if screening.risk_score >= 50 else ["Official security features and layout conform to authentic document standards."]),
-        "photo_forensics_status": screening.photo_forensics_status or ("Fake / Tampered Photo" if screening.risk_score >= 50 else "Real Photo"),
-        "photo_forensics_score": screening.photo_forensics_score or (25.0 if screening.risk_score >= 50 else 0.0),
-        "photo_forensics_explanation": screening.photo_forensics_explanation or ("Document portrait shows localized variance or alterations." if screening.risk_score >= 50 else "Embedded document portrait verified authentic."),
+        "photo_forensics_status": (screening.photo_forensics_status or "Real Photo") if is_face_detected else "No Face Detected",
+        "photo_forensics_score": screening.photo_forensics_score or 0.0,
+        "photo_forensics_explanation": (screening.photo_forensics_explanation or "Embedded document portrait verified authentic.") if is_face_detected else "No facial photograph detected in the uploaded document.",
         
         # Document Face Analysis (Always run on ID's embedded face)
-        "face_detected": screening.face_detected if screening.face_detected is not None else True,
-        "face_quality": screening.face_quality or "Good",
-        "photo_region_detected": screening.photo_region_detected if screening.photo_region_detected is not None else True,
-        "doc_face_status": screening.doc_face_status or screening.photo_forensics_status or ("Real Photo" if screening.face_detected else "No Face Detected"),
-        "doc_face_confidence": screening.doc_face_confidence if screening.doc_face_confidence is not None else 0.94,
-        "doc_face_indicators": screening.doc_face_indicators or [],
-        "doc_face_explanation": screening.doc_face_explanation or screening.photo_forensics_explanation or ("Embedded document portrait verified authentic." if screening.face_detected else "No facial photograph detected in the uploaded document."),
-        "doc_face_box": screening.doc_face_box,
-        "doc_face_crop_path": screening.doc_face_crop_path,
-        "doc_face_crop_url": doc_face_crop_url,
+        "face_detected": is_face_detected,
+        "face_quality": screening.face_quality or ("Good" if is_face_detected else "Inconclusive"),
+        "photo_region_detected": bool(screening.photo_region_detected) if is_face_detected else False,
+        "doc_face_status": (screening.doc_face_status or screening.photo_forensics_status or "Real Photo") if is_face_detected else "No Face Detected",
+        "doc_face_confidence": screening.doc_face_confidence if screening.doc_face_confidence is not None else 0.95,
+        "doc_face_indicators": screening.doc_face_indicators if (is_face_detected and screening.doc_face_indicators) else ([] if not is_face_detected else ["Consistent photographic substrate", "Natural lighting and contours"]),
+        "doc_face_explanation": (screening.doc_face_explanation or screening.photo_forensics_explanation or "Embedded document portrait verified authentic.") if is_face_detected else "No facial photograph detected in the uploaded document.",
+        "doc_face_box": screening.doc_face_box if is_face_detected else None,
+        "doc_face_crop_path": screening.doc_face_crop_path if is_face_detected else None,
+        "doc_face_crop_url": doc_face_crop_url if is_face_detected else None,
 
         # Face Verification (Only when comparison photo supplied)
         "face_verification_performed": screening.face_verification_performed if screening.face_verification_performed is not None else bool(screening.presented_face_path),

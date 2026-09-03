@@ -73,7 +73,7 @@ def detect_and_crop_document_face(
         if box_coords:
             detected_faces_list.append(box_coords)
 
-        # 2. Multi-face / portrait detection using OpenCV (handling OpenCV 4 and 5)
+        # 2. Multi-face / portrait detection using OpenCV Haar Cascade
         img_np = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
         gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
 
@@ -105,44 +105,24 @@ def detect_and_crop_document_face(
                                     round(y2 / h_img, 3), round(x2 / w_img, 3)
                                 ))
                         if detected_faces_list:
-                            logger.info(f"[FACE_ANALYSIS] OpenCV Haar Cascade detected {len(detected_faces_list)} face candidates.")
+                            logger.info(f"[FACE_ANALYSIS] OpenCV Haar Cascade confirmed {len(detected_faces_list)} human face(s).")
                 except Exception as ex:
                     logger.warning(f"[FACE_ANALYSIS] Haar cascade detection note: {ex}")
-
-            # Smart portrait region heuristic for ID cards (left or right card quadrant)
-            if not detected_faces_list:
-                edges = cv2.Canny(gray, 40, 120)
-                contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-                best_candidate = None
-                best_area = 0
-
-                for c in contours:
-                    cx, cy, cw, ch = cv2.boundingRect(c)
-                    area = cw * ch
-                    # ID portrait is typically 8%-45% of width, 15%-85% of height, aspect ratio 1.0 to 1.7
-                    if 0.08 * w_img < cw < 0.50 * w_img and 0.15 * h_img < ch < 0.85 * h_img:
-                        aspect = float(ch) / cw
-                        if 0.95 < aspect < 1.8:
-                            # Check if located in typical portrait zones (left side or right side of card)
-                            if (cx < 0.45 * w_img) or (cx > 0.55 * w_img):
-                                if area > best_area:
-                                    best_area = area
-                                    best_candidate = (
-                                        cx, cy, cw, ch,
-                                        round(cy / h_img, 3), round(cx / w_img, 3),
-                                        round((cy + ch) / h_img, 3), round((cx + cw) / w_img, 3)
-                                    )
-
-                if best_candidate:
-                    detected_faces_list.append(best_candidate)
-                    box_coords = best_candidate
 
         if not box_coords and detected_faces_list:
             # Sort by area descending
             detected_faces_list.sort(key=lambda b: b[2] * b[3], reverse=True)
             box_coords = detected_faces_list[0]
 
+        # STRICT RULE: If no real human face was confirmed by AI or Haar Cascade, do NOT use non-face contours!
         if not box_coords:
+            logger.info("[FACE_ANALYSIS] No human face detected in document. Returning Inconclusive.")
+            # Remove any stale crop file if present
+            if output_crop_path and os.path.exists(output_crop_path):
+                try:
+                    os.remove(output_crop_path)
+                except Exception:
+                    pass
             return {
                 "face_detected": False,
                 "faces_detected_count": 0,
@@ -152,7 +132,7 @@ def detect_and_crop_document_face(
                 "photo_region_detected": False,
                 "box": None,
                 "crop_path": None,
-                "reason": "No facial photograph detected in the uploaded document."
+                "reason": "No human face was detected in the submitted document."
             }
 
         # Filter duplicates or overlapping candidate boxes

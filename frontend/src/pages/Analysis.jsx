@@ -307,14 +307,14 @@ export const Analysis = () => {
       : "INCONCLUSIVE";
 
   // Document Face Analysis (Always evaluated on ID's embedded face)
-  const faceDetected = screening.face_detected !== undefined ? screening.face_detected : (findings.face_analysis?.face_detected ?? true);
-  const faceQuality = screening.face_quality || findings.face_analysis?.quality || "Good";
-  const photoRegionDetected = screening.photo_region_detected !== undefined ? screening.photo_region_detected : (findings.face_analysis?.photo_region_detected ?? true);
-  const rawDocFaceStatus = screening.doc_face_status || findings.face_analysis?.photo_status || findings.face_analysis?.status || (faceDetected ? "Real Photo" : "No Face Detected");
+  const faceDetected = screening.face_detected !== undefined ? Boolean(screening.face_detected) : Boolean(findings.face_analysis?.face_detected);
+  const faceQuality = faceDetected ? (screening.face_quality || findings.face_analysis?.quality || "Good") : "Inconclusive";
+  const photoRegionDetected = faceDetected ? (screening.photo_region_detected !== undefined ? Boolean(screening.photo_region_detected) : Boolean(findings.face_analysis?.photo_region_detected)) : false;
+  const rawDocFaceStatus = faceDetected ? (screening.doc_face_status || findings.face_analysis?.photo_status || findings.face_analysis?.status || "Real Photo") : "No Face Detected";
   const docFaceExplanation = !faceDetected
-    ? "No facial photograph detected in the uploaded document."
+    ? "No human face was detected in the submitted document."
     : (screening.doc_face_explanation || findings.face_analysis?.explanation || "Embedded document portrait verified authentic.");
-  const docFaceIndicators = screening.doc_face_indicators || findings.face_analysis?.indicators || [];
+  const docFaceIndicators = faceDetected ? (screening.doc_face_indicators || findings.face_analysis?.indicators || []) : [];
 
   const isDocumentTamperedOrFake = Boolean(
     screening.risk_score >= 50 ||
@@ -341,8 +341,8 @@ export const Analysis = () => {
     ? "No Face Detected" 
     : (isFakeFace ? "Fake / Tampered Photo" : "Real Photo");
   const docFaceConf = Math.round((screening.doc_face_confidence || findings.face_analysis?.confidence || 0.94) * 100);
-  const rawCropPath = screening.doc_face_crop_url || (screening.doc_face_crop_path ? `/uploads/documents/${screening.doc_face_crop_path.split(/[\\/]/).pop()}` : (faceDetected ? `/uploads/documents/${screening.screening_id}_face_crop.jpg` : null));
-  const docFaceCropUrl = getMediaUrl(rawCropPath);
+  const rawCropPath = faceDetected ? (screening.doc_face_crop_url || (screening.doc_face_crop_path ? `/uploads/documents/${screening.doc_face_crop_path.split(/[\\/]/).pop()}` : `/uploads/documents/${screening.screening_id}_face_crop.jpg`)) : null;
+  const docFaceCropUrl = rawCropPath ? getMediaUrl(rawCropPath) : null;
   const documentFileUrl = getMediaUrl(screening.file_url);
 
   // Resolved Tampering Pillars (Module 3)
@@ -826,22 +826,11 @@ export const Analysis = () => {
                 <div className="flex items-center gap-3.5 my-2">
                   {/* Face Image Thumbnail */}
                   <div className="relative w-16 h-20 rounded-xl overflow-hidden border border-cyan-500/30 bg-slate-950 flex-shrink-0 flex items-center justify-center group shadow-md shadow-cyan-950/20">
-                    {docFaceCropUrl && faceDetected ? (
+                    {faceDetected && docFaceCropUrl ? (
                       <img
                         src={docFaceCropUrl}
                         alt="Embedded ID Face Crop"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform"
-                        onError={(e) => {
-                          if (documentFileUrl && e.target.src !== documentFileUrl) {
-                            e.target.src = documentFileUrl;
-                          }
-                        }}
-                      />
-                    ) : documentFileUrl && faceDetected ? (
-                      <img
-                        src={documentFileUrl}
-                        alt="Document"
-                        className="w-full h-full object-cover opacity-80"
                       />
                     ) : (
                       <User className="w-8 h-8 text-slate-600" />
