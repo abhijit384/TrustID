@@ -19,7 +19,8 @@ def detect_and_crop_document_face(
     2. Crops and saves the face image.
     3. Calculates physical image quality metrics (blur variance, brightness, contrast, size).
     """
-    if not os.path.exists(doc_image_path):
+    if not doc_image_path or not os.path.exists(doc_image_path):
+        logger.warning(f"[FACE_ANALYSIS] Document image path not found on disk: {doc_image_path}")
         return {
             "face_detected": False,
             "face_quality": "Inconclusive",
@@ -30,9 +31,10 @@ def detect_and_crop_document_face(
         }
 
     try:
-        # Load image via PIL for reliable dimension handling
+        # Load image via PIL for reliable dimension handling across formats
         pil_img = Image.open(doc_image_path).convert("RGB")
         w_img, h_img = pil_img.size
+        logger.info(f"[FACE_ANALYSIS] Analyzing image: {os.path.basename(doc_image_path)} ({w_img}x{h_img}px)")
 
         # 1. Determine bounding box from AI normalized_box if provided
         box_coords = None
@@ -55,7 +57,7 @@ def detect_and_crop_document_face(
                 ymax /= 1000.0
                 xmax /= 1000.0
 
-            if ymax > ymin and xmax > xmin and (ymax - ymin) > 0.04 and (xmax - xmin) > 0.04:
+            if ymax > ymin and xmax > xmin and (ymax - ymin) > 0.03 and (xmax - xmin) > 0.03:
                 # Add gentle 4% margin for natural portrait context
                 pad_y = (ymax - ymin) * 0.04
                 pad_x = (xmax - xmin) * 0.04
@@ -65,6 +67,7 @@ def detect_and_crop_document_face(
                 x2 = min(w_img, int((xmax + pad_x) * w_img))
                 box_coords = (x1, y1, x2 - x1, y2 - y1, ymin, xmin, ymax, xmax)
                 has_ai_box = True
+                logger.info(f"[FACE_ANALYSIS] Using AI bounding box: [{ymin:.3f}, {xmin:.3f}, {ymax:.3f}, {xmax:.3f}] -> ({x1},{y1},{x2},{y2})")
 
         detected_faces_list = []
         if box_coords:
@@ -75,32 +78,36 @@ def detect_and_crop_document_face(
         gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
 
         if not has_ai_box:
-            # Check if CascadeClassifier is available (OpenCV 4)
+            # Check if CascadeClassifier is available (OpenCV Haar Cascade)
             if hasattr(cv2, "CascadeClassifier"):
                 try:
-                    cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-                    face_cascade = cv2.CascadeClassifier(cascade_path)
-                    faces = face_cascade.detectMultiScale(
-                        gray,
-                        scaleFactor=1.1,
-                        minNeighbors=5,
-                        minSize=(int(w_img * 0.08), int(h_img * 0.10))
-                    )
-                    for (fx, fy, fw, fh) in faces:
-                        if fw >= 0.06 * w_img and fh >= 0.08 * h_img:
-                            pad_fy = int(fh * 0.10)
-                            pad_fx = int(fw * 0.10)
-                            x1 = max(0, fx - pad_fx)
-                            y1 = max(0, fy - pad_fy)
-                            x2 = min(w_img, fx + fw + pad_fx)
-                            y2 = min(h_img, fy + fh + pad_fy)
-                            detected_faces_list.append((
-                                x1, y1, x2 - x1, y2 - y1,
-                                round(y1 / h_img, 3), round(x1 / w_img, 3),
-                                round(y2 / h_img, 3), round(x2 / w_img, 3)
-                            ))
+                    haardata = getattr(cv2.data, 'haarcascades', '') if hasattr(cv2, 'data') else ''
+                    cascade_path = os.path.join(haardata, 'haarcascade_frontalface_default.xml')
+                    if os.path.exists(cascade_path):
+                        face_cascade = cv2.CascadeClassifier(cascade_path)
+                        faces = face_cascade.detectMultiScale(
+                            gray,
+                            scaleFactor=1.1,
+                            minNeighbors=5,
+                            minSize=(int(w_img * 0.08), int(h_img * 0.10))
+                        )
+                        for (fx, fy, fw, fh) in faces:
+                            if fw >= 0.06 * w_img and fh >= 0.08 * h_img:
+                                pad_fy = int(fh * 0.10)
+                                pad_fx = int(fw * 0.10)
+                                x1 = max(0, fx - pad_fx)
+                                y1 = max(0, fy - pad_fy)
+                                x2 = min(w_img, fx + fw + pad_fx)
+                                y2 = min(h_img, fy + fh + pad_fy)
+                                detected_faces_list.append((
+                                    x1, y1, x2 - x1, y2 - y1,
+                                    round(y1 / h_img, 3), round(x1 / w_img, 3),
+                                    round(y2 / h_img, 3), round(x2 / w_img, 3)
+                                ))
+                        if detected_faces_list:
+                            logger.info(f"[FACE_ANALYSIS] OpenCV Haar Cascade detected {len(detected_faces_list)} face candidates.")
                 except Exception as ex:
-                    logger.warning(f"Haar cascade detection note: {ex}")
+                    logger.warning(f"[FACE_ANALYSIS] Haar cascade detection note: {ex}")
 
             # Smart portrait region heuristic for ID cards (left or right card quadrant)
             if not detected_faces_list:

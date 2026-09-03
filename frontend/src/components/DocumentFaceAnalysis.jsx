@@ -11,6 +11,7 @@ import {
   Eye,
   Activity
 } from 'lucide-react';
+import { getMediaUrl } from '../services/api';
 
 export const DocumentFaceAnalysis = ({
   faceDetected = true,
@@ -24,6 +25,9 @@ export const DocumentFaceAnalysis = ({
   originalUrl = null,
   box = null
 }) => {
+  const resolvedCropUrl = getMediaUrl(cropUrl);
+  const resolvedOriginalUrl = getMediaUrl(originalUrl);
+
   const isNoFace = !faceDetected || status?.toLowerCase().includes("no face");
 
   const isExplicitReal = Boolean(
@@ -90,16 +94,21 @@ export const DocumentFaceAnalysis = ({
             Extracted Document Portrait
           </span>
           <div className="relative rounded-xl overflow-hidden border border-slate-800 bg-slate-950/80 flex items-center justify-center min-h-[200px] group">
-            {cropUrl && faceDetected ? (
+            {resolvedCropUrl && faceDetected ? (
               <img 
-                src={cropUrl} 
+                src={resolvedCropUrl} 
                 alt="Document Face Crop" 
                 className="w-full h-52 object-contain p-2" 
+                onError={(e) => {
+                  if (resolvedOriginalUrl && e.target.src !== resolvedOriginalUrl) {
+                    e.target.src = resolvedOriginalUrl;
+                  }
+                }}
               />
-            ) : originalUrl && faceDetected ? (
+            ) : resolvedOriginalUrl && faceDetected ? (
               <div className="relative w-full h-52 flex items-center justify-center bg-slate-900/60 p-2">
                 <img 
-                  src={originalUrl} 
+                  src={resolvedOriginalUrl} 
                   alt="Document Thumbnail" 
                   className="max-h-full max-w-full object-contain rounded-lg opacity-80" 
                 />

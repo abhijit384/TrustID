@@ -24,7 +24,7 @@ import {
   ShieldAlert,
   Fingerprint
 } from 'lucide-react';
-import { screeningsAPI } from '../services/api';
+import { screeningsAPI, getMediaUrl } from '../services/api';
 import { RiskBadge } from '../components/RiskBadge';
 import { Sha256Badge } from '../components/Sha256Badge';
 import { DocumentFaceAnalysis } from '../components/DocumentFaceAnalysis';
@@ -341,7 +341,9 @@ export const Analysis = () => {
     ? "No Face Detected" 
     : (isFakeFace ? "Fake / Tampered Photo" : "Real Photo");
   const docFaceConf = Math.round((screening.doc_face_confidence || findings.face_analysis?.confidence || 0.94) * 100);
-  const docFaceCropUrl = screening.doc_face_crop_url || (screening.doc_face_crop_path ? `/uploads/documents/${screening.doc_face_crop_path.split(/[\\/]/).pop()}` : null);
+  const rawCropPath = screening.doc_face_crop_url || (screening.doc_face_crop_path ? `/uploads/documents/${screening.doc_face_crop_path.split(/[\\/]/).pop()}` : (faceDetected ? `/uploads/documents/${screening.screening_id}_face_crop.jpg` : null));
+  const docFaceCropUrl = getMediaUrl(rawCropPath);
+  const documentFileUrl = getMediaUrl(screening.file_url);
 
   // Resolved Tampering Pillars (Module 3)
   const isPhotoReplacementAltered = Boolean(
@@ -830,12 +832,14 @@ export const Analysis = () => {
                         alt="Embedded ID Face Crop"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform"
                         onError={(e) => {
-                          if (screening.file_url) e.target.src = screening.file_url;
+                          if (documentFileUrl && e.target.src !== documentFileUrl) {
+                            e.target.src = documentFileUrl;
+                          }
                         }}
                       />
-                    ) : screening.file_url && faceDetected ? (
+                    ) : documentFileUrl && faceDetected ? (
                       <img
-                        src={screening.file_url}
+                        src={documentFileUrl}
                         alt="Document"
                         className="w-full h-full object-cover opacity-80"
                       />
@@ -1398,7 +1402,7 @@ export const Analysis = () => {
           indicators={docFaceIndicators}
           explanation={docFaceExplanation}
           cropUrl={docFaceCropUrl}
-          originalUrl={screening.file_url}
+          originalUrl={documentFileUrl}
           box={screening.doc_face_box}
         />
       )}

@@ -16,13 +16,27 @@ from backend.services.validation_service import validate_document_rules, compare
 from backend.services.tampering_service import run_tampering_analysis
 from backend.services.face_service import detect_and_crop_document_face, compute_face_comparison_similarity, analyze_photo_authenticity, check_multiple_identities
 
+from pathlib import Path
+import logging
+
+logger = logging.getLogger("trustid.documents")
+
 router = APIRouter(prefix="/api/screenings", tags=["Screenings & Documents"])
 
-UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
-DOCS_DIR = os.path.join(UPLOAD_DIR, "documents")
-FACES_DIR = os.path.join(UPLOAD_DIR, "faces")
-os.makedirs(DOCS_DIR, exist_ok=True)
-os.makedirs(FACES_DIR, exist_ok=True)
+BACKEND_DIR = Path(__file__).resolve().parent.parent
+UPLOAD_DIR = BACKEND_DIR / "uploads"
+DOCS_DIR = UPLOAD_DIR / "documents"
+FACES_DIR = UPLOAD_DIR / "faces"
+SAMPLES_DIR = UPLOAD_DIR / "samples"
+FORENSICS_DIR = UPLOAD_DIR / "forensics"
+
+for _d in [UPLOAD_DIR, DOCS_DIR, FACES_DIR, SAMPLES_DIR, FORENSICS_DIR]:
+    _d.mkdir(parents=True, exist_ok=True)
+
+UPLOAD_DIR_STR = str(UPLOAD_DIR)
+DOCS_DIR_STR = str(DOCS_DIR)
+FACES_DIR_STR = str(FACES_DIR)
+SAMPLES_DIR_STR = str(SAMPLES_DIR)
 
 @router.get("", response_model=List[ScreeningSummary])
 def get_screenings(
@@ -263,6 +277,24 @@ def analyze_screening(
 
     doc_path = screening.file_path
     if not doc_path or not os.path.exists(doc_path):
+        if doc_path:
+            fname = os.path.basename(doc_path.replace("\\", "/"))
+            candidate = os.path.join(DOCS_DIR_STR, fname)
+            if os.path.exists(candidate):
+                doc_path = candidate
+                screening.file_path = candidate
+                db.commit()
+            else:
+                # Also check root uploads/documents
+                legacy_candidate = os.path.join(str(BACKEND_DIR.parent / "uploads" / "documents"), fname)
+                if os.path.exists(legacy_candidate):
+                    shutil.copy2(legacy_candidate, candidate)
+                    doc_path = candidate
+                    screening.file_path = candidate
+                    db.commit()
+
+    if not doc_path or not os.path.exists(doc_path):
+        logger.error(f"[ANALYSIS] Document file not found on disk: {doc_path}")
         screening.status = "failed"
         screening.investigation_notes = "Uploaded document file not found on disk."
         db.commit()
@@ -377,7 +409,7 @@ def analyze_screening(
         gemini_face = gemini_res.get("face_analysis") or gemini_res.get("document_face_analysis") or {}
         norm_box = gemini_face.get("bounding_box") or gemini_face.get("bounding_box_normalized")
         face_crop_filename = f"{screening.screening_id}_face_crop.jpg"
-        face_crop_path = os.path.join(DOCS_DIR, face_crop_filename)
+        face_crop_path = str(DOCS_DIR / face_crop_filename)
 
         doc_face_box_data = None
         gemini_has_face = gemini_face.get("face_detected")
@@ -754,13 +786,13 @@ def get_screening_detail(
             )
 
     file_url = None
-    if screening.file_path and os.path.exists(screening.file_path):
-        fname = os.path.basename(screening.file_path)
+    if screening.file_path:
+        fname = os.path.basename(screening.file_path.replace("\\", "/"))
         file_url = f"/uploads/documents/{fname}"
 
     presented_face_url = None
-    if screening.presented_face_path and os.path.exists(screening.presented_face_path):
-        fname = os.path.basename(screening.presented_face_path)
+    if screening.presented_face_path:
+        fname = os.path.basename(screening.presented_face_path.replace("\\", "/"))
         presented_face_url = f"/uploads/faces/{fname}"
 
     officer_name = screening.creator.name if screening.creator else "Authorized Officer"
@@ -778,11 +810,11 @@ def get_screening_detail(
         }
 
     doc_face_crop_url = None
-    default_crop_file = os.path.join(DOCS_DIR, f"{screening.screening_id}_face_crop.jpg")
-    if screening.doc_face_crop_path and os.path.exists(screening.doc_face_crop_path):
+    default_crop_file = DOCS_DIR / f"{screening.screening_id}_face_crop.jpg"
+    if screening.doc_face_crop_path:
         c_fname = os.path.basename(screening.doc_face_crop_path.replace("\\", "/"))
         doc_face_crop_url = f"/uploads/documents/{c_fname}"
-    elif os.path.exists(default_crop_file):
+    elif default_crop_file.exists() or screening.face_detected:
         doc_face_crop_url = f"/uploads/documents/{screening.screening_id}_face_crop.jpg"
 
     return {

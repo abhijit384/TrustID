@@ -1,5 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { UploadCloud, FileText, CheckCircle, Sparkles, X, Image as ImageIcon, UserCheck } from 'lucide-react';
+import { getMediaUrl } from '../services/api';
 
 export const UploadBox = ({ onDocumentSelected, onAnalyze, onClear, isAnalyzing = false }) => {
   const [dragActive, setDragActive] = useState(false);
@@ -24,19 +25,20 @@ export const UploadBox = ({ onDocumentSelected, onAnalyze, onClear, isAnalyzing 
     e.stopPropagation();
     setDragActive(false);
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      processFile(e.dataTransfer.files[0]);
+      handleFile(e.dataTransfer.files[0]);
     }
   };
 
-  const handleFileChange = (e) => {
+  const handleChange = (e) => {
+    e.preventDefault();
     if (e.target.files && e.target.files[0]) {
-      processFile(e.target.files[0]);
+      handleFile(e.target.files[0]);
     }
   };
 
-  const processFile = (file) => {
-    setSelectedFile(file);
+  const handleFile = (file) => {
     setSelectedSample(null);
+    setSelectedFile(file);
     const url = URL.createObjectURL(file);
     setPreviewUrl(url);
 
@@ -53,7 +55,7 @@ export const UploadBox = ({ onDocumentSelected, onAnalyze, onClear, isAnalyzing 
   const handleSelectSample = (sampleId, docName) => {
     setSelectedFile(null);
     setSelectedSample(sampleId);
-    const url = `/uploads/samples/${sampleId}.jpg`;
+    const url = getMediaUrl(`/uploads/samples/${sampleId}.jpg`);
     setPreviewUrl(url);
 
     if (onDocumentSelected) {
