@@ -2,7 +2,6 @@
 
 > **Intelligent, Explainable & Secure Identity Verification**
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](https://opensource.org/licenses/MIT)
 [![Python: FastAPI](https://img.shields.io/badge/Backend-FastAPI%20%7C%20Python-3776AB.svg)](https://fastapi.tiangolo.com/)
 [![Frontend: React + Vite](https://img.shields.io/badge/Frontend-React%20%7C%20Vite-61DAFB.svg)](https://vitejs.dev/)
 [![AI: Gemini 3.5 Flash](https://img.shields.io/badge/AI-Google%20Gemini%203.5%20Flash-4285F4.svg)](https://ai.google.dev/)
