@@ -1,0 +1,84 @@
+# ==============================================================================
+# TRUSTID Root .gitignore
+# ==============================================================================
+
+# Environment variable files and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+secrets/
+
+# Python virtual environments & bytecode
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+.venv/
+venv/
+ENV/
+env/
+
+# Node.js dependencies and production build outputs
+node_modules/
+frontend/dist/
+frontend/node_modules/
+.npm
+.eslintcache
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+trustid.db
+backend/trustid.db
+
+# Uploaded documents, forensic caches, and identity files
+uploads/
+backend/uploads/
+!backend/uploads/samples/
+*.jpg
+*.jpeg
+*.png
+*.pdf
+!test_assets/
+!frontend/public/
+!backend/uploads/samples/*.jpg
+!backend/uploads/samples/*.txt
+
+# IDE, Editor & OS artifacts
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs & Temporary debug files
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pypdfium2_cache/
+.pytest_cache/
+.coverage
+htmlcov/

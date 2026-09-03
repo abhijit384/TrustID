@@ -1,0 +1,559 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-[#080c14] text-slate-100 font-sans antialiased selection:bg-cyan-500 selection:text-black transition-colors duration-200;
+    overflow-x: hidden;
+  }
+
+  html.light body {
+    @apply bg-slate-100 text-slate-900 selection:bg-cyan-600 selection:text-white;
+  }
+}
+
+/* Glassmorphic panels */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+html.light .glass-panel {
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(203, 213, 225, 0.7);
+  box-shadow: 0 4px 20px -2px rgba(148, 163, 184, 0.15);
+}
+
+.glass-panel-interactive {
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  transition: all 0.2s ease-in-out;
+}
+
+html.light .glass-panel-interactive {
+  background: rgba(255, 255, 255, 0.88);
+  border: 1px solid rgba(203, 213, 225, 0.7);
+  box-shadow: 0 4px 20px -2px rgba(148, 163, 184, 0.15);
+}
+
+.glass-panel-interactive:hover {
+  border-color: rgba(56, 189, 248, 0.35);
+  box-shadow: 0 0 20px -5px rgba(2, 132, 199, 0.25);
+}
+
+html.light .glass-panel-interactive:hover {
+  border-color: rgba(6, 182, 212, 0.6);
+  box-shadow: 0 4px 25px -2px rgba(6, 182, 212, 0.2);
+}
+
+/* Custom Cyber Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #080c14;
+}
+::-webkit-scrollbar-thumb {
+  background: #1e293b;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Animation utilities */
+@keyframes pulse-subtle {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.85; transform: scale(0.99); }
+}
+
+.animate-pulse-subtle {
+  animation: pulse-subtle 3s infinite ease-in-out;
+}
+
+@keyframes scanline {
+  0% { transform: translateY(-100%); }
+  100% { transform: translateY(1000%); }
+}
+
+.animate-scanline {
+  animation: scanline 4s linear infinite;
+}
+
+/* Light Theme Comprehensive Component Overrides */
+html.light aside {
+  background: #ffffff !important;
+  border-right-color: rgba(203, 213, 225, 0.8) !important;
+}
+
+html.light header {
+  background: rgba(255, 255, 255, 0.95) !important;
+  border-bottom-color: rgba(203, 213, 225, 0.8) !important;
+}
+
+/* Base Light Panels */
+html.light .glass-panel,
+html.light .glass-panel-interactive {
+  background: rgba(255, 255, 255, 0.94) !important;
+  border: 1px solid rgba(203, 213, 225, 0.85) !important;
+  box-shadow: 0 4px 20px -2px rgba(148, 163, 184, 0.12) !important;
+}
+
+/* Background surfaces */
+html.light [class*="bg-[#080c14]"] {
+  background-color: #f8fafc !important;
+}
+
+html.light [class*="bg-[#0a0f1d]"] {
+  background-color: #ffffff !important;
+}
+
+html.light [class*="bg-slate-950"] {
+  background-color: #f1f5f9 !important;
+}
+
+html.light [class*="bg-slate-900"] {
+  background-color: #f8fafc !important;
+}
+
+html.light [class*="bg-slate-800"] {
+  background-color: #e2e8f0 !important;
+}
+
+html.light [class*="bg-slate-700"] {
+  background-color: #cbd5e1 !important;
+}
+
+html.light [class*="bg-black"] {
+  background-color: #f1f5f9 !important;
+}
+
+/* Soft Tinted Containers for Light Mode */
+html.light [class*="bg-purple-950"] {
+  background-color: #f3e8ff !important;
+  border-color: rgba(147, 51, 234, 0.3) !important;
+}
+
+html.light [class*="bg-sky-950"] {
+  background-color: #e0f2fe !important;
+  border-color: rgba(2, 132, 199, 0.3) !important;
+}
+
+html.light [class*="bg-cyan-950"] {
+  background-color: #e0f2fe !important;
+  border-color: rgba(6, 182, 212, 0.3) !important;
+}
+
+html.light [class*="bg-rose-950"] {
+  background-color: #ffe4e6 !important;
+  border-color: rgba(225, 29, 72, 0.3) !important;
+}
+
+html.light [class*="bg-amber-950"] {
+  background-color: #fef3c7 !important;
+  border-color: rgba(217, 119, 6, 0.3) !important;
+}
+
+html.light [class*="bg-emerald-950"] {
+  background-color: #d1fae5 !important;
+  border-color: rgba(5, 150, 105, 0.3) !important;
+}
+
+/* Cancel dark slate/tint gradients on card containers so light cards take effect */
+html.light div[class*="from-slate-"],
+html.light div[class*="from-cyan-950"],
+html.light div[class*="from-emerald-950"],
+html.light div[class*="from-rose-950"],
+html.light div[class*="from-amber-950"],
+html.light div[class*="from-purple-950"],
+html.light div[class*="via-slate-"],
+html.light div[class*="to-slate-"],
+html.light div[class*="to-purple-950"] {
+  background-image: none !important;
+}
+
+/* Hover overrides */
+html.light [class*="hover:bg-slate-800"]:hover,
+html.light [class*="hover:bg-slate-700"]:hover,
+html.light [class*="hover:bg-slate-900"]:hover {
+  background-color: #e2e8f0 !important;
+}
+
+/* Border overrides */
+html.light [class*="border-slate-800"],
+html.light [class*="border-slate-700"] {
+  border-color: rgba(203, 213, 225, 0.8) !important;
+}
+
+/* Inputs, Selects, and Textareas */
+html.light input, 
+html.light select, 
+html.light textarea {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light input::placeholder, 
+html.light textarea::placeholder {
+  color: #64748b !important;
+  opacity: 1 !important;
+}
+
+html.light select option {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+/* Pre and Code Blocks */
+html.light pre:not([class*="bg-rose"]):not([class*="bg-amber"]),
+html.light code:not([class*="bg-rose"]):not([class*="bg-amber"]) {
+  background-color: #f1f5f9 !important;
+  color: #0f172a !important;
+  border-color: #cbd5e1 !important;
+}
+
+/* Headings: Always deep slate on light backgrounds */
+html.light h1,
+html.light h2,
+html.light h3,
+html.light h4,
+html.light h5,
+html.light h6 {
+  color: #0f172a !important;
+}
+
+/* Slate Text Colors (using substring matching to cover all opacities) */
+html.light [class*="text-slate-100"] {
+  color: #0f172a !important;
+}
+
+html.light [class*="text-slate-200"] {
+  color: #1e293b !important;
+}
+
+html.light [class*="text-slate-300"] {
+  color: #334155 !important;
+}
+
+html.light [class*="text-slate-400"] {
+  color: #475569 !important;
+}
+
+html.light [class*="text-slate-500"] {
+  color: #64748b !important;
+}
+
+html.light [class*="text-slate-600"] {
+  color: #475569 !important;
+}
+
+/* Default: text-white elements become crisp dark slate on light mode surfaces */
+html.light .text-white:not(button):not(button *):not(a[class*="bg-"]):not(a[class*="from-"]):not(span[class*="bg-gradient"]):not(div[class*="bg-gradient-tr"]),
+html.light [class*="text-white"]:not(button):not(button *):not(a[class*="bg-"]):not(a[class*="from-"]):not(span[class*="bg-gradient"]):not(div[class*="bg-gradient-tr"]) {
+  color: #0f172a !important;
+}
+
+/* ====================================================================
+   COMPREHENSIVE LIGHT THEME BUTTON SYSTEM
+   Ensures 100% clarity, high contrast, and tactile elevation on all buttons
+==================================================================== */
+
+/* 1. Primary Action & Gradient Buttons in Light Mode */
+html.light button[class*="bg-gradient"],
+html.light button[class*="from-"],
+html.light a[class*="bg-gradient"],
+html.light a[class*="from-"],
+html.light button[class*="bg-cyan"],
+html.light button[class*="bg-sky"],
+html.light button[class*="bg-blue"],
+html.light button[class*="bg-purple"],
+html.light button[class*="bg-indigo"],
+html.light a[class*="bg-cyan"],
+html.light a[class*="bg-sky"],
+html.light a[class*="bg-blue"],
+html.light a[class*="bg-purple"],
+html.light a[class*="bg-indigo"] {
+  color: #ffffff !important;
+  font-weight: 600 !important;
+  box-shadow: 0 4px 14px 0 rgba(2, 132, 199, 0.35) !important;
+  border: 1px solid rgba(2, 132, 199, 0.4) !important;
+}
+
+html.light button[class*="bg-gradient"] *,
+html.light button[class*="from-"] *,
+html.light a[class*="bg-gradient"] *,
+html.light a[class*="from-"] *,
+html.light button[class*="bg-cyan"] *,
+html.light button[class*="bg-sky"] *,
+html.light button[class*="bg-blue"] *,
+html.light button[class*="bg-purple"] *,
+html.light button[class*="bg-indigo"] *,
+html.light a[class*="bg-cyan"] *,
+html.light a[class*="bg-sky"] *,
+html.light a[class*="bg-blue"] *,
+html.light a[class*="bg-purple"] *,
+html.light a[class*="bg-indigo"] * {
+  color: #ffffff !important;
+}
+
+html.light button[class*="bg-gradient"]:hover,
+html.light button[class*="from-"]:hover,
+html.light a[class*="bg-gradient"]:hover,
+html.light a[class*="from-"]:hover {
+  box-shadow: 0 6px 20px 0 rgba(2, 132, 199, 0.45) !important;
+  filter: brightness(1.05);
+}
+
+/* 2. Secondary & Neutral Outline Buttons in Light Mode */
+html.light button:not([class*="bg-gradient"]):not([class*="from-"]):not([class*="bg-cyan"]):not([class*="bg-sky"]):not([class*="bg-blue"]):not([class*="bg-emerald"]):not([class*="bg-rose"]):not([class*="bg-amber"]):not([class*="bg-purple"]):not([class*="bg-red"]):not([class*="bg-transparent"]):not([class*="p-0"]),
+html.light a[role="button"]:not([class*="bg-gradient"]):not([class*="from-"]):not([class*="bg-cyan"]):not([class*="bg-sky"]):not([class*="bg-blue"]):not([class*="bg-emerald"]):not([class*="bg-rose"]):not([class*="bg-amber"]):not([class*="bg-purple"]) {
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #1e293b !important;
+  font-weight: 500 !important;
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.08) !important;
+}
+
+html.light button:not([class*="bg-gradient"]):not([class*="from-"]):not([class*="bg-cyan"]):not([class*="bg-sky"]):not([class*="bg-blue"]):not([class*="bg-emerald"]):not([class*="bg-rose"]):not([class*="bg-amber"]):not([class*="bg-purple"]):not([class*="bg-red"]):not([class*="bg-transparent"]):not([class*="p-0"]) * {
+  color: #1e293b !important;
+}
+
+html.light button:not([class*="bg-gradient"]):not([class*="from-"]):not([class*="bg-cyan"]):not([class*="bg-sky"]):not([class*="bg-blue"]):not([class*="bg-emerald"]):not([class*="bg-rose"]):not([class*="bg-amber"]):not([class*="bg-purple"]):not([class*="bg-red"]):not([class*="bg-transparent"]):not([class*="p-0"]):hover {
+  background-color: #f1f5f9 !important;
+  border-color: #0284c7 !important;
+  color: #0284c7 !important;
+  box-shadow: 0 2px 6px 0 rgba(2, 132, 199, 0.2) !important;
+}
+
+html.light button:not([class*="bg-gradient"]):not([class*="from-"]):not([class*="bg-cyan"]):not([class*="bg-sky"]):not([class*="bg-blue"]):not([class*="bg-emerald"]):not([class*="bg-rose"]):not([class*="bg-amber"]):not([class*="bg-purple"]):not([class*="bg-red"]):not([class*="bg-transparent"]):not([class*="p-0"]):hover * {
+  color: #0284c7 !important;
+}
+
+/* 3. Icon Action & Header Buttons in Light Mode */
+html.light button[class*="p-2"],
+html.light button[class*="p-1.5"],
+html.light button[class*="p-1"] {
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  color: #334155 !important;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05) !important;
+}
+
+html.light button[class*="p-2"]:hover,
+html.light button[class*="p-1.5"]:hover,
+html.light button[class*="p-1"]:hover {
+  background-color: #f8fafc !important;
+  border-color: #0284c7 !important;
+  color: #0284c7 !important;
+}
+
+html.light button[class*="p-2"] svg,
+html.light button[class*="p-1.5"] svg,
+html.light button[class*="p-1"] svg {
+  color: #334155 !important;
+}
+
+html.light button[class*="p-2"]:hover svg,
+html.light button[class*="p-1.5"]:hover svg,
+html.light button[class*="p-1"]:hover svg {
+  color: #0284c7 !important;
+}
+
+/* 4. Alert / Danger / Success Action Buttons in Light Mode */
+html.light button[class*="bg-rose"],
+html.light button[class*="bg-red"],
+html.light button[class*="from-rose"],
+html.light button[class*="from-red"] {
+  background-color: #e11d48 !important;
+  border-color: #be123c !important;
+  color: #ffffff !important;
+}
+
+html.light button[class*="bg-rose"] *,
+html.light button[class*="bg-red"] * {
+  color: #ffffff !important;
+}
+
+html.light button[class*="bg-emerald"],
+html.light button[class*="bg-green"],
+html.light button[class*="from-emerald"] {
+  background-color: #059669 !important;
+  border-color: #047857 !important;
+  color: #ffffff !important;
+}
+
+html.light button[class*="bg-emerald"] *,
+html.light button[class*="bg-green"] * {
+  color: #ffffff !important;
+}
+
+/* 5. Tab & Filter Pill Buttons in Light Mode */
+html.light button[class*="rounded-lg"][class*="text-xs"],
+html.light button[class*="rounded-full"][class*="text-xs"] {
+  border: 1px solid #cbd5e1 !important;
+}
+
+html.light button[class*="bg-cyan-500"],
+html.light button[class*="bg-sky-500"] {
+  background-color: #0284c7 !important;
+  border-color: #0284c7 !important;
+  color: #ffffff !important;
+  font-weight: 600 !important;
+}
+
+html.light button[class*="bg-cyan-500"] *,
+html.light button[class*="bg-sky-500"] * {
+  color: #ffffff !important;
+}
+
+/* Ensure avatar chips and badge logos retain their contrast */
+html.light div[class*="bg-gradient-tr"] svg,
+html.light div[class*="bg-gradient-tr"] {
+  color: #ffffff !important;
+}
+
+/* High-Contrast Cyber Accents for Light Mode (substring matching for opacities) */
+html.light [class*="text-cyan-"] {
+  color: #0284c7 !important;
+}
+
+html.light [class*="text-sky-"] {
+  color: #0369a1 !important;
+}
+
+html.light [class*="text-blue-"] {
+  color: #1d4ed8 !important;
+}
+
+html.light [class*="text-amber-"] {
+  color: #b45309 !important;
+}
+
+html.light [class*="text-emerald-"] {
+  color: #047857 !important;
+}
+
+html.light [class*="text-rose-"] {
+  color: #be123c !important;
+}
+
+html.light [class*="text-purple-"] {
+  color: #7e22ce !important;
+}
+
+html.light [class*="text-indigo-"] {
+  color: #4338ca !important;
+}
+
+/* Gradient text brand logos (e.g. TRUSTID) */
+html.light [class*="bg-clip-text"] {
+  -webkit-background-clip: text !important;
+  background-clip: text !important;
+  -webkit-text-fill-color: transparent !important;
+  color: transparent !important;
+}
+
+/* Sidebar navigation styling in Light Mode */
+html.light aside nav a.active,
+html.light aside nav a.active span,
+html.light aside nav a.active * {
+  background-color: #e0f2fe !important;
+  border-color: #0284c7 !important;
+  color: #0369a1 !important;
+  font-weight: 700 !important;
+  box-shadow: 0 1px 3px 0 rgba(2, 132, 199, 0.18) !important;
+}
+
+html.light aside nav a.active svg {
+  color: #0284c7 !important;
+  stroke-width: 2.25px !important;
+}
+
+html.light aside nav a:not(.active) {
+  background-color: transparent !important;
+  border-color: transparent !important;
+  color: #334155 !important;
+  font-weight: 500 !important;
+}
+
+html.light aside nav a:not(.active) span,
+html.light aside nav a:not(.active) * {
+  color: #334155 !important;
+}
+
+html.light aside nav a:not(.active):hover {
+  color: #0f172a !important;
+  background-color: #f1f5f9 !important;
+  border-color: #cbd5e1 !important;
+}
+
+html.light aside nav a:not(.active):hover span,
+html.light aside nav a:not(.active):hover * {
+  color: #0f172a !important;
+}
+
+html.light aside nav a:not(.active) svg {
+  color: #64748b !important;
+}
+
+html.light aside nav a:not(.active):hover svg {
+  color: #0284c7 !important;
+}
+
+/* Floating menus, dropdowns, and notifications */
+html.light [class*="shadow-2xl"] {
+  background-color: #ffffff !important;
+  border-color: #cbd5e1 !important;
+  box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 8px 10px -6px rgba(0, 0, 0, 0.08) !important;
+}
+
+/* Recharts and SVG charts */
+html.light .recharts-cartesian-grid-horizontal line,
+html.light .recharts-cartesian-grid-vertical line {
+  stroke: #e2e8f0 !important;
+}
+
+html.light svg text,
+html.light .recharts-text,
+html.light .recharts-pie text,
+html.light .recharts-pie-label-text,
+html.light .recharts-legend-item-text {
+  fill: #334155 !important;
+  color: #334155 !important;
+}
+
+html.light .recharts-default-tooltip {
+  background-color: #ffffff !important;
+  border: 1px solid #cbd5e1 !important;
+  border-radius: 0.75rem !important;
+  box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1) !important;
+  color: #0f172a !important;
+}
+
+html.light .recharts-tooltip-item,
+html.light .recharts-tooltip-item-name,
+html.light .recharts-tooltip-item-value {
+  color: #0f172a !important;
+}
+
+html.light .recharts-tooltip-label {
+  color: #475569 !important;
+  font-weight: 600 !important;
+}
+
+html.light svg path[stroke="#1e293b"] {
+  stroke: #e2e8f0 !important;
+}
+
+
+
+

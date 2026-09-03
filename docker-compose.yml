@@ -1,0 +1,44 @@
+version: '3.8'
+
+services:
+  database:
+    image: postgres:15-alpine
+    container_name: trustid_db
+    environment:
+      POSTGRES_USER: trustid_user
+      POSTGRES_PASSWORD: trustid_password
+      POSTGRES_DB: trustid_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    container_name: trustid_backend
+    environment:
+      - DATABASE_URL=postgresql://trustid_user:trustid_password@database:5432/trustid_db
+      - JWT_SECRET=trustid-sih-2026-secure-secret-key-32bytes-min
+      - DEMO_MODE=true
+    ports:
+      - "8000:8000"
+    depends_on:
+      - database
+    restart: unless-stopped
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: trustid_frontend
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
