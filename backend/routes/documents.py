@@ -105,169 +105,177 @@ async def create_screening_upload(
     """
     print(f"[UPLOAD] UPLOAD START")
 
-    # 1. Generate unique screening ID (e.g. TR-2026-0001)
-    next_num = 1
-    while True:
-        test_id = f"TR-2026-{next_num:04d}"
-        if not db.query(Screening).filter(Screening.screening_id == test_id).first():
-            screening_id = test_id
-            break
-        next_num += 1
+    try:
+        # 1. Generate unique screening ID (e.g. TR-2026-0001)
+        next_num = 1
+        while True:
+            test_id = f"TR-2026-{next_num:04d}"
+            if not db.query(Screening).filter(Screening.screening_id == test_id).first():
+                screening_id = test_id
+                break
+            next_num += 1
 
-    doc_filename = f"{screening_id}_doc.jpg"
-    doc_path = os.path.join(DOCS_DIR, doc_filename)
+        doc_filename = f"{screening_id}_doc.jpg"
+        doc_path = str(DOCS_DIR / doc_filename)
 
-    file_bytes = b""
-    original_name = "demo_document.jpg"
+        file_bytes = b""
+        original_name = "demo_document.jpg"
 
-    if document and document.filename:
-        original_name = document.filename
-        file_bytes = await document.read()
+        if document and document.filename:
+            original_name = document.filename
+            file_bytes = await document.read()
 
-        # Automatic PDF conversion: extract digital text and render pages
-        is_pdf = file_bytes.startswith(b"%PDF") or original_name.lower().endswith(".pdf")
-        if is_pdf:
-            try:
-                import pypdfium2 as pdfium
-                pdf = pdfium.PdfDocument(file_bytes)
-                
-                # Extract all text from all pages
-                pdf_lines = []
-                for p_idx in range(len(pdf)):
-                    try:
-                        textpage = pdf[p_idx].get_textpage()
-                        txt = textpage.get_text_range()
-                        if txt and txt.strip():
-                            pdf_lines.append(txt.strip())
-                    except Exception:
-                        pass
-                
-                pdf_full_text = "\n".join(pdf_lines)
-                if pdf_full_text:
-                    txt_path = f"{doc_path}.txt"
-                    with open(txt_path, "w", encoding="utf-8") as tf:
-                        tf.write(pdf_full_text)
-                    print(f"[CONVERT] Extracted {len(pdf_full_text)} chars of text from PDF to {txt_path}")
-
-                # Save original PDF companion
-                orig_pdf_path = doc_path.replace(".jpg", ".pdf")
-                with open(orig_pdf_path, "wb") as pf:
-                    pf.write(file_bytes)
-
-                if len(pdf) > 0:
-                    best_page_img = None
-                    target_page_idx = 0
-                    # Check first 5 pages for embedded portrait
-                    for p_idx in range(min(5, len(pdf))):
-                        try:
-                            p_img = pdf[p_idx].render(scale=2.5).to_pil()
-                            temp_page_path = f"{doc_path}_page_{p_idx}.jpg"
-                            p_img.convert("RGB").save(temp_page_path, format="JPEG", quality=90)
-                            p_res = detect_and_crop_document_face(temp_page_path)
-                            if os.path.exists(temp_page_path):
-                                try:
-                                    os.remove(temp_page_path)
-                                except Exception:
-                                    pass
-                            if p_res.get("face_detected"):
-                                best_page_img = p_img
-                                target_page_idx = p_idx
-                                print(f"[CONVERT] Confirmed face portrait on PDF page {p_idx + 1}")
-                                break
-                        except Exception as p_err:
-                            logger.debug(f"PDF page {p_idx} render note: {p_err}")
-
-                    if best_page_img is None:
-                        best_page_img = pdf[0].render(scale=2.5).to_pil()
+            # Automatic PDF conversion: extract digital text and render pages
+            is_pdf = file_bytes.startswith(b"%PDF") or original_name.lower().endswith(".pdf")
+            if is_pdf:
+                try:
+                    import pypdfium2 as pdfium
+                    pdf = pdfium.PdfDocument(file_bytes)
                     
-                    best_page_img.convert("RGB").save(doc_path, format="JPEG", quality=95)
-                    print(f"[CONVERT] Successfully rendered PDF '{original_name}' (page {target_page_idx + 1}) to JPEG: {doc_path}")
-                else:
+                    # Extract all text from all pages
+                    pdf_lines = []
+                    for p_idx in range(len(pdf)):
+                        try:
+                            textpage = pdf[p_idx].get_textpage()
+                            txt = textpage.get_text_range()
+                            if txt and txt.strip():
+                                pdf_lines.append(txt.strip())
+                        except Exception:
+                            pass
+                    
+                    pdf_full_text = "\n".join(pdf_lines)
+                    if pdf_full_text:
+                        txt_path = f"{doc_path}.txt"
+                        with open(txt_path, "w", encoding="utf-8") as tf:
+                            tf.write(pdf_full_text)
+                        print(f"[CONVERT] Extracted {len(pdf_full_text)} chars of text from PDF to {txt_path}")
+
+                    # Save original PDF companion
+                    orig_pdf_path = doc_path.replace(".jpg", ".pdf")
+                    with open(orig_pdf_path, "wb") as pf:
+                        pf.write(file_bytes)
+
+                    if len(pdf) > 0:
+                        best_page_img = None
+                        target_page_idx = 0
+                        # Check first 5 pages for embedded portrait
+                        for p_idx in range(min(5, len(pdf))):
+                            try:
+                                p_img = pdf[p_idx].render(scale=2.5).to_pil()
+                                temp_page_path = f"{doc_path}_page_{p_idx}.jpg"
+                                p_img.convert("RGB").save(temp_page_path, format="JPEG", quality=90)
+                                p_res = detect_and_crop_document_face(temp_page_path)
+                                if os.path.exists(temp_page_path):
+                                    try:
+                                        os.remove(temp_page_path)
+                                    except Exception:
+                                        pass
+                                if p_res.get("face_detected"):
+                                    best_page_img = p_img
+                                    target_page_idx = p_idx
+                                    print(f"[CONVERT] Confirmed face portrait on PDF page {p_idx + 1}")
+                                    break
+                            except Exception as p_err:
+                                logger.debug(f"PDF page {p_idx} render note: {p_err}")
+
+                        if best_page_img is None:
+                            best_page_img = pdf[0].render(scale=2.5).to_pil()
+                        
+                        best_page_img.convert("RGB").save(doc_path, format="JPEG", quality=95)
+                        print(f"[CONVERT] Successfully rendered PDF '{original_name}' (page {target_page_idx + 1}) to JPEG: {doc_path}")
+                    else:
+                        with open(doc_path, "wb") as f:
+                            f.write(file_bytes)
+                except Exception as pdf_err:
+                    print(f"[CONVERT] pypdfium2 conversion note: {pdf_err}")
                     with open(doc_path, "wb") as f:
                         f.write(file_bytes)
-            except Exception as pdf_err:
-                print(f"[CONVERT] pypdfium2 conversion note: {pdf_err}")
+            else:
                 with open(doc_path, "wb") as f:
                     f.write(file_bytes)
+        elif sample_id:
+            sample_path = str(SAMPLES_DIR / f"{sample_id}.jpg")
+            if os.path.exists(sample_path):
+                with open(sample_path, "rb") as sf:
+                    file_bytes = sf.read()
+                with open(doc_path, "wb") as f:
+                    f.write(file_bytes)
+                sample_txt = f"{sample_path}.txt"
+                if os.path.exists(sample_txt):
+                    try:
+                        shutil.copyfile(sample_txt, f"{doc_path}.txt")
+                    except Exception:
+                        pass
+                original_name = f"{sample_id}.jpg"
+            else:
+                raise HTTPException(status_code=400, detail=f"Sample '{sample_id}' not found.")
         else:
-            with open(doc_path, "wb") as f:
-                f.write(file_bytes)
-    elif sample_id:
-        sample_path = os.path.join(UPLOAD_DIR, "samples", f"{sample_id}.jpg")
-        if os.path.exists(sample_path):
-            with open(sample_path, "rb") as sf:
-                file_bytes = sf.read()
-            with open(doc_path, "wb") as f:
-                f.write(file_bytes)
-            sample_txt = f"{sample_path}.txt"
-            if os.path.exists(sample_txt):
-                try:
-                    shutil.copyfile(sample_txt, f"{doc_path}.txt")
-                except Exception:
-                    pass
-            original_name = f"{sample_id}.jpg"
-        else:
-            raise HTTPException(status_code=400, detail=f"Sample '{sample_id}' not found.")
-    else:
-        raise HTTPException(status_code=400, detail="No document file or sample ID provided.")
+            raise HTTPException(status_code=400, detail="No document file or sample ID provided.")
 
-    print(f"[UPLOAD] FILE RECEIVED: {original_name}")
+        print(f"[UPLOAD] FILE RECEIVED: {original_name}")
 
-    # Calculate SHA-256
-    doc_hash = calculate_sha256_from_bytes(file_bytes)
+        # Calculate SHA-256
+        doc_hash = calculate_sha256_from_bytes(file_bytes)
 
-    # Presented face photo (optional)
-    face_path = None
-    if presented_face and presented_face.filename:
-        face_filename = f"{screening_id}_face.jpg"
-        face_path = os.path.join(FACES_DIR, face_filename)
-        p_bytes = await presented_face.read()
-        with open(face_path, "wb") as f:
-            f.write(p_bytes)
+        # Presented face photo (optional)
+        face_path = None
+        if presented_face and presented_face.filename:
+            face_filename = f"{screening_id}_face.jpg"
+            face_path = str(FACES_DIR / face_filename)
+            p_bytes = await presented_face.read()
+            with open(face_path, "wb") as f:
+                f.write(p_bytes)
 
-    started_at = datetime.datetime.utcnow()
+        started_at = datetime.datetime.utcnow()
 
-    # Initial Screening Record - Saved with status "uploaded"
-    new_screening = Screening(
-        screening_id=screening_id,
-        document_type=document_type,
-        status="uploaded",
-        risk_score=0.0,
-        risk_level="Pending",
-        created_by=current_user.id,
-        original_filename=original_name,
-        file_path=doc_path,
-        presented_face_path=face_path,
-        document_hash=doc_hash,
-        demo_person_name="Pending Analysis",
-        processing_time_sec=0.0,
-        analysis_started_at=started_at
-    )
-    db.add(new_screening)
-    db.commit()
-    db.refresh(new_screening)
+        # Initial Screening Record - Saved with status "uploaded"
+        new_screening = Screening(
+            screening_id=screening_id,
+            document_type=document_type,
+            status="uploaded",
+            risk_score=0.0,
+            risk_level="Pending",
+            created_by=current_user.id,
+            original_filename=original_name,
+            file_path=doc_path,
+            presented_face_path=face_path,
+            document_hash=doc_hash,
+            demo_person_name="Pending Analysis",
+            processing_time_sec=0.0,
+            analysis_started_at=started_at
+        )
+        db.add(new_screening)
+        db.commit()
+        db.refresh(new_screening)
 
-    # Audit log: Upload
-    db.add(AuditLog(
-        user_id=current_user.id,
-        screening_id=new_screening.id,
-        action="Document Uploaded",
-        details=f"Document uploaded by {current_user.name} ({current_user.role}) with SHA-256: {doc_hash[:16]}...",
-        timestamp=datetime.datetime.utcnow()
-    ))
-    db.commit()
+        # Audit log: Upload
+        db.add(AuditLog(
+            user_id=current_user.id,
+            screening_id=new_screening.id,
+            action="Document Uploaded",
+            details=f"Document uploaded by {current_user.name} ({current_user.role}) with SHA-256: {doc_hash[:16]}...",
+            timestamp=datetime.datetime.utcnow()
+        ))
+        db.commit()
 
-    print(f"[UPLOAD] SCREENING CREATED: {screening_id}")
-    print(f"[DATABASE] DATABASE COMMIT SUCCESS")
-    print(f"[STORAGE] FILE SAVED: {doc_path}")
+        print(f"[UPLOAD] SCREENING CREATED: {screening_id}")
+        print(f"[DATABASE] DATABASE COMMIT SUCCESS")
+        print(f"[STORAGE] FILE SAVED: {doc_path}")
 
-    return {
-        "success": True,
-        "screening_id": new_screening.screening_id,
-        "database_id": new_screening.id,
-        "id": new_screening.id,
-        "status": new_screening.status
-    }
+        return {
+            "success": True,
+            "screening_id": new_screening.screening_id,
+            "database_id": new_screening.id,
+            "id": new_screening.id,
+            "status": new_screening.status
+        }
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception as upload_err:
+        db.rollback()
+        logger.error(f"[UPLOAD] Upload processing failed: {upload_err}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to create document screening record: {str(upload_err)}")
 
 
 @router.post("/{screening_identifier}/analyze", response_model=ScreeningDetail)

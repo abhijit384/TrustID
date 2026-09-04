@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const envApiUrl = import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL;
+const envApiUrl = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '').trim().replace(/\/+$/, '');
 const isProdBrowser = typeof window !== 'undefined' && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1';
 
 export const API_BASE_URL = envApiUrl || (isProdBrowser ? 'https://trustid-y2fd.onrender.com' : 'http://localhost:8000');
@@ -50,7 +50,6 @@ export const screeningsAPI = {
   get: (id) => api.get(`/api/screenings/${id}`),
   getById: (id) => api.get(`/api/screenings/${id}`),
   create: (formData) => api.post('/api/screenings', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
     timeout: 180000
   }),
   analyze: (id) => api.post(`/api/screenings/${id}/analyze`, null, { timeout: 180000 }),

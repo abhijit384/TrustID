@@ -71,7 +71,14 @@ export const NewScreening = () => {
       console.error("Document upload failed:", err);
       clearInterval(stepInterval);
       setIsAnalyzing(false);
-      const detail = err.response?.data?.detail || err.message;
+      let detail = err.response?.data?.detail;
+      if (!detail) {
+        if (err.message === "Network Error") {
+          detail = "Network Error: Unable to reach TRUSTID backend server. Please verify your connection.";
+        } else {
+          detail = err.message || "Unknown upload error";
+        }
+      }
       setErrorMessage(
         `UPLOAD FAILED\n\nCould not initialize screening record for this document.\n\nPlease check:\n• Uploaded file format\n• Server connectivity\n\n(Details: ${detail})`
       );
