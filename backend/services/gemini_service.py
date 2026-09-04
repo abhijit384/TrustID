@@ -609,11 +609,11 @@ Return strictly valid JSON with this structure:
     last_err = None
     response = None
 
-    env_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    env_model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     candidate_models = []
     if env_model:
         candidate_models.append(env_model)
-    candidate_models.extend(["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"])
+    candidate_models.extend(["gemini-3.5-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-flash-latest"])
     candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
 
     config_args = {
@@ -737,12 +737,30 @@ def generate_dynamic_cv_analysis(
     faces_detected_count = 0
     multiple_faces_detected = False
 
-    # Safe Cascade check (OpenCV 4/5 compatible)
-    if hasattr(cv2, "CascadeClassifier"):
+    # Face detection using YuNet ONNX or Haar Cascade
+    try:
+        from backend.services.face_service import _detect_faces_yunet
+        yunet_faces = _detect_faces_yunet(img, score_thresh=0.35)
+        if yunet_faces:
+            face_detected = True
+            faces_detected_count = len(yunet_faces)
+            best_face = max(yunet_faces, key=lambda f: f[0])
+            fx, fy, fw, fh = best_face[1]
+            face_box = [
+                round(float(fy) / h, 3),
+                round(float(fx) / w, 3),
+                round(float(fy + fh) / h, 3),
+                round(float(fx + fw) / w, 3)
+            ]
+    except Exception as ex:
+        logger.debug(f"YuNet CV fallback note: {ex}")
+
+    # Safe Cascade check if YuNet was not available or found no face
+    if not face_detected and hasattr(cv2, "CascadeClassifier"):
         try:
             cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
             face_cascade = cv2.CascadeClassifier(cascade_path)
-            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(int(w * 0.08), int(h * 0.10)))
+            faces = face_cascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=6, minSize=(int(w * 0.10), int(h * 0.12)))
             faces_detected_count = len(faces)
             if len(faces) > 0:
                 face_detected = True
@@ -757,38 +775,6 @@ def generate_dynamic_cv_analysis(
         except Exception as ex:
             logger.warning(f"Face cascade detection note: {ex}")
 
-    # Fallback to contour detection in standard ID portrait quadrants
-    if not face_detected:
-        try:
-            edges = cv2.Canny(gray, 40, 120)
-            contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
-            best_c = None
-            best_area = 0
-            for c in contours:
-                cx, cy, cw, ch = cv2.boundingRect(c)
-                area = cw * ch
-                if 0.08 * w < cw < 0.50 * w and 0.15 * h < ch < 0.85 * h:
-                    aspect = float(ch) / cw
-                    if 0.95 < aspect < 1.8:
-                        if (cx < 0.45 * w) or (cx > 0.55 * w):
-                            if area > best_area:
-                                best_area = area
-                                best_c = (cx, cy, cw, ch)
-
-            if best_c:
-                face_detected = True
-                faces_detected_count = 1
-                cx, cy, cw, ch = best_c
-                face_box = [
-                    round(float(cy) / h, 3),
-                    round(float(cx) / w, 3),
-                    round(float(cy + ch) / h, 3),
-                    round(float(cx + cw) / w, 3)
-                ]
-            del edges
-        except Exception:
-            pass
-
     is_blurred = blur_var < 25.0
 
     # Local computer vision Error Level Analysis (ELA) for image compression disparity
@@ -799,29 +785,9 @@ def generate_dynamic_cv_analysis(
         resaved = cv2.imdecode(encimg, 1)
         ela_diff = cv2.absdiff(img, resaved)
         ela_gray = cv2.cvtColor(ela_diff, cv2.COLOR_BGR2GRAY)
-        if float(ela_gray.std()) > 8.0 and float(ela_diff.mean()) > 15.0:
+        if float(ela_gray.std()) > 14.0 and float(ela_diff.mean()) > 25.0:
             ela_anomaly = True
         del resaved, ela_diff, ela_gray, encimg
-    except Exception:
-        pass
-
-    # Detect solid/masked rectangular shapes (such as white box obscuring signature or data fields)
-    masked_box_detected = False
-    masked_box_reason = ""
-    try:
-        inner_gray = gray[int(h * 0.15):int(h * 0.88), int(w * 0.12):int(w * 0.88)]
-        _, thresh_white = cv2.threshold(inner_gray, 245, 255, cv2.THRESH_BINARY)
-        contours, _ = cv2.findContours(thresh_white, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        for c in contours:
-            bx, by, bw, bh = cv2.boundingRect(c)
-            b_area = bw * bh
-            if b_area > (w * h * 0.015) and bw > 0.15 * w and bh > 0.03 * h:
-                aspect = float(bw) / max(1, bh)
-                if aspect > 2.0:
-                    masked_box_detected = True
-                    masked_box_reason = "Solid rectangular mask detected obscuring signature or credential text region."
-                    break
-        del inner_gray, thresh_white
     except Exception:
         pass
 
@@ -832,8 +798,7 @@ def generate_dynamic_cv_analysis(
     is_pan_marker = any(k in filename.lower() or k in (ocr_context or "").lower() for k in ["pan", "pvc", "income tax", "permanent account"])
     is_tampered_doc = (
         any(k in filename.lower() or k in (ocr_context or "").lower() for k in ["tamper", "fake", "forged", "alter", "counterfeit", "synthetic"]) or
-        ela_anomaly or
-        masked_box_detected
+        ela_anomaly
     )
 
     if not face_detected:
@@ -878,18 +843,15 @@ def generate_dynamic_cv_analysis(
     doc_type = "Indian PAN Card" if is_pan_marker else (parsed.get("document_type") or ("Passport" if has_mrz else "Identity Document"))
 
     tamp_indicators = []
-    if masked_box_detected:
-        tamp_indicators.append(masked_box_reason)
-    if is_tampered_doc and not masked_box_detected:
+    if is_tampered_doc:
         tamp_indicators.extend(["Altered photograph / synthetic replacement", "Disparate font micro-structure in date field"])
     if is_mrz_mismatch:
         tamp_indicators.append("MRZ encoding parity mismatch with visual biographical field")
 
     tamp_explanation = (
-        f"Observable digital manipulation detected: {masked_box_reason}" if masked_box_detected
-        else ("Multiple physical and digital tampering indicators detected across portrait and credential lines." if is_tampered_doc
+        "Multiple physical and digital tampering indicators detected across portrait and credential lines." if is_tampered_doc
         else ("Discrepancy detected between optical text and MRZ encoding." if is_mrz_mismatch
-        else "Visual substrate appears uniform with no signs of manipulation."))
+        else "Visual substrate appears uniform with no signs of manipulation.")
     )
 
     data = {
@@ -946,9 +908,9 @@ def generate_dynamic_cv_analysis(
             "score": 85.0 if is_tampered_doc else (60.0 if is_mrz_mismatch else 0.0),
             "explanation": tamp_explanation,
             "indicators": tamp_indicators,
-            "photo_replacement_detected": is_tampered_doc and not masked_box_detected,
-            "text_manipulation_detected": is_tampered_doc or is_mrz_mismatch or masked_box_detected,
-            "stamp_forgery_detected": is_tampered_doc and not masked_box_detected
+            "photo_replacement_detected": is_tampered_doc,
+            "text_manipulation_detected": is_tampered_doc or is_mrz_mismatch,
+            "stamp_forgery_detected": is_tampered_doc
         },
         "document_integrity_indicators": [],
         "model_name": "Trust AI Neural Engine",
