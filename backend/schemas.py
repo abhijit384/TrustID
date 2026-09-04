@@ -196,6 +196,9 @@ class ScreeningDetail(BaseModel):
     # Document Face Analysis (Always run on ID's embedded face)
     face_detected: Optional[bool] = True
     faces_detected_count: Optional[int] = 1
+    primary_portrait_face_count: Optional[int] = 1
+    document_wide_face_count: Optional[int] = 1
+    other_faces_count: Optional[int] = 0
     multiple_faces_detected: Optional[bool] = False
     face_quality: Optional[str] = "Good"
     photo_region_detected: Optional[bool] = True

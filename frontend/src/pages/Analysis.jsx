@@ -308,6 +308,9 @@ export const Analysis = () => {
 
   // Document Face Analysis (Always evaluated on ID's embedded face)
   const faceDetected = screening.face_detected !== undefined ? Boolean(screening.face_detected) : Boolean(findings.face_analysis?.face_detected);
+  const primaryFaceCount = faceDetected ? (screening.primary_portrait_face_count ?? screening.faces_detected_count ?? findings.face_analysis?.primary_portrait_face_count ?? 1) : 0;
+  const documentWideFaceCount = faceDetected ? (screening.document_wide_face_count ?? findings.face_analysis?.document_wide_face_count ?? primaryFaceCount) : 0;
+  const otherFacesCount = faceDetected ? (screening.other_faces_count ?? findings.face_analysis?.other_faces_count ?? Math.max(0, documentWideFaceCount - primaryFaceCount)) : 0;
   const faceQuality = faceDetected ? (screening.face_quality || findings.face_analysis?.quality || "Good") : "Inconclusive";
   const photoRegionDetected = faceDetected ? (screening.photo_region_detected !== undefined ? Boolean(screening.photo_region_detected) : Boolean(findings.face_analysis?.photo_region_detected)) : false;
   const rawDocFaceStatus = faceDetected ? (screening.doc_face_status || findings.face_analysis?.photo_status || findings.face_analysis?.status || "Real Photo") : "No Face Detected";
@@ -1384,6 +1387,9 @@ export const Analysis = () => {
       {activeTab === 'face_analysis' && (
         <DocumentFaceAnalysis
           faceDetected={faceDetected}
+          primaryFaceCount={primaryFaceCount}
+          documentWideFaceCount={documentWideFaceCount}
+          otherFacesCount={otherFacesCount}
           faceQuality={faceQuality}
           photoRegionDetected={photoRegionDetected}
           status={docFaceStatus}

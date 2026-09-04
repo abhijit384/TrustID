@@ -129,9 +129,9 @@ def test_full_matrix():
     print("[PASS] Case F: Real human portrait selected, QR code and stamp ignored.")
 
     # -------------------------------------------------------------
-    # 7. CASE G: Multiple Faces in Single Document
+    # 7. CASE G: Primary Portrait (1 face) + Another Person Photo Elsewhere in Document
     # -------------------------------------------------------------
-    print("\n--- CASE G: Multiple Faces in Single Document ---")
+    print("\n--- CASE G: Primary Portrait + Another Photo Elsewhere in Document ---")
     multi_path = "test_assets/generated/test_multi_face.jpg"
     multi_img = np.full((700, 1000, 3), 240, dtype=np.uint8)
     if os.path.exists(doc_a):
@@ -143,10 +143,35 @@ def test_full_matrix():
 
     crop_g = "backend/uploads/test_output/crop_g.jpg"
     res_g = detect_and_crop_document_face(multi_path, output_crop_path=crop_g)
-    print(f"Result: detected={res_g['face_detected']}, count={res_g['faces_detected_count']}, multiple={res_g['multiple_faces_detected']}")
+    print(f"Result: detected={res_g['face_detected']}, portrait_faces={res_g['primary_portrait_face_count']}, doc_wide={res_g['document_wide_face_count']}, other_faces={res_g['other_faces_count']}")
     assert res_g['face_detected'] is True, "Faces must be detected"
-    assert res_g['multiple_faces_detected'] is True or res_g['faces_detected_count'] >= 2, "Must flag multiple faces"
-    print("[PASS] Case G: Multiple faces correctly detected and flagged.")
+    assert res_g['primary_portrait_face_count'] == 1, "Primary portrait contains exactly 1 face"
+    assert res_g['document_wide_face_count'] >= 2, "Document-wide should detect the second face elsewhere"
+    assert res_g['other_faces_count'] >= 1, "Other faces count should reflect the additional face"
+    assert res_g['multiple_faces_in_portrait'] is False, "Primary portrait should NOT be marked multiple faces"
+    print("[PASS] Case G: Primary portrait face separated cleanly from other faces in document.")
+
+    # -------------------------------------------------------------
+    # 8. CASE H: Two Faces Inside the Primary Portrait Photograph Area
+    # -------------------------------------------------------------
+    print("\n--- CASE H: Multiple Faces Inside Single Portrait Crop ---")
+    double_face_path = "test_assets/generated/test_double_face_portrait.jpg"
+    double_img = np.full((600, 800, 3), 240, dtype=np.uint8)
+    face_src = crop_a if os.path.exists(crop_a) else doc_a
+    if os.path.exists(face_src):
+        sample_face = cv2.imread(face_src)
+        p1 = cv2.resize(sample_face, (130, 170))
+        # Place two faces side-by-side in portrait region
+        double_img[100:270, 60:190] = p1
+        double_img[100:270, 200:330] = p1
+    cv2.imwrite(double_face_path, double_img)
+
+    crop_h = "backend/uploads/test_output/crop_h.jpg"
+    res_h = detect_and_crop_document_face(double_face_path, output_crop_path=crop_h)
+    print(f"Result: detected={res_h['face_detected']}, portrait_faces={res_h['primary_portrait_face_count']}, doc_wide={res_h['document_wide_face_count']}, quality={res_h['face_quality']}")
+    assert res_h['face_detected'] is True, "Faces must be detected"
+    assert res_h['document_wide_face_count'] >= 2, "Must detect multiple faces in document"
+    print("[PASS] Case H: Multiple faces inside document/portrait area correctly identified.")
 
     print("\n=======================================================")
     print("      ALL TEST MATRIX CASES PASSED SUCCESSFULLY!       ")

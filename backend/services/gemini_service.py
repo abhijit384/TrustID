@@ -257,17 +257,25 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
                 break
         has_face_anomaly = has_anomaly_mention
 
-    multi_faces = face_data.get("multiple_faces_detected") or (face_data.get("faces_detected_count", 1) > 1)
-    if multi_faces:
+    multi_faces_in_portrait = bool(face_data.get("multiple_faces_in_portrait") or (face_data.get("primary_portrait_face_count", 1) > 1))
+    if multi_faces_in_portrait:
         risk_score += 45
         has_face_anomaly = True
-        face_count = face_data.get("faces_detected_count", 2)
-        reasons.append(f"Multiple facial portraits detected ({face_count} faces). Official identity documents must have exactly one face portrait.")
+        face_count = face_data.get("primary_portrait_face_count", 2)
+        reasons.append(f"Multiple facial portraits detected inside primary photo region ({face_count} faces). Official identity documents must have exactly one face portrait.")
         risk_factors.append({
-            "feature": "Multiple Faces Detected",
+            "feature": "Multiple Faces in Portrait",
             "impact": 45,
             "direction": "risk",
-            "description": f"More than one face ({face_count}) detected on document surface."
+            "description": f"More than one face ({face_count}) detected inside primary portrait area."
+        })
+    elif face_data.get("other_faces_count", 0) > 0 or face_data.get("document_wide_face_count", 1) > 1:
+        doc_wide_cnt = face_data.get("document_wide_face_count", 2)
+        risk_factors.append({
+            "feature": "Secondary Face Regions on Substrate",
+            "impact": 0,
+            "direction": "neutral",
+            "description": f"{doc_wide_cnt} total face-like regions noted across document substrate (primary portrait verified authentic)."
         })
 
     if not face_det:
@@ -286,8 +294,8 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
         face_data["photo_status"] = "Fake / Tampered Photo"
         face_data["is_real_photo"] = False
         face_data["status"] = "Anomaly Detected"
-        if multi_faces:
-            reasons.append(f"Multiple faces anomaly: Found {face_data.get('faces_detected_count', 2)} faces.")
+        if multi_faces_in_portrait:
+            reasons.append(f"Multiple faces anomaly: Found {face_data.get('primary_portrait_face_count', 2)} faces inside primary portrait.")
         else:
             reasons.append(f"Photo region anomaly: {face_inds[0] if face_inds else 'Observable alteration or synthetic/AI generation'}")
         risk_factors.append({

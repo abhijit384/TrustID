@@ -443,8 +443,10 @@ def analyze_screening(
         )
 
         doc_face_detected = bool(local_face_res.get("face_detected", False))
-        faces_detected_count = local_face_res.get("faces_detected_count", 1 if doc_face_detected else 0)
-        multiple_faces_detected = bool(local_face_res.get("multiple_faces_detected", False) or (faces_detected_count > 1))
+        primary_portrait_face_count = int(local_face_res.get("primary_portrait_face_count", 1 if doc_face_detected else 0))
+        document_wide_face_count = int(local_face_res.get("document_wide_face_count", primary_portrait_face_count))
+        other_faces_count = int(local_face_res.get("other_faces_count", max(0, document_wide_face_count - primary_portrait_face_count)))
+        multiple_faces_in_portrait = bool(local_face_res.get("multiple_faces_in_portrait", False) or (primary_portrait_face_count > 1))
         doc_face_quality = local_face_res.get("face_quality", "Good" if doc_face_detected else "Inconclusive")
         photo_reg_detected = bool(doc_face_detected and local_face_res.get("photo_region_detected", True))
         doc_face_box_data = local_face_res.get("box") if doc_face_detected else None
@@ -489,16 +491,19 @@ def analyze_screening(
                     os.remove(face_crop_path)
                 except Exception:
                     pass
-        elif multiple_faces_detected:
-            doc_face_st = "Fake / Tampered Photo"
-            doc_face_conf = 0.96
-            doc_face_inds = [f"Multiple facial portraits detected ({faces_detected_count} faces)", "Breach of ICAO single-photograph credential requirement"]
-            doc_face_expl = f"MULTIPLE FACES DETECTED ({faces_detected_count} faces found). Official identity documents must contain only a single primary photograph."
-            doc_face_quality = "Multiple Faces Detected"
+        elif multiple_faces_in_portrait:
+            doc_face_st = "Multiple Faces in Portrait"
+            doc_face_conf = 0.88
+            doc_face_inds = [
+                f"Multiple human faces detected inside primary portrait ({primary_portrait_face_count} faces)",
+                "Identity credential standards require a single-individual portrait photograph"
+            ]
+            doc_face_expl = f"MULTIPLE FACES IN PORTRAIT ({primary_portrait_face_count} faces found). The primary portrait photograph region contains multiple distinct faces."
+            doc_face_quality = "Multiple Faces in Portrait"
         elif is_anomaly:
             doc_face_st = "Fake / Tampered Photo"
-            doc_face_conf = float(max(gemini_face.get("confidence", 0.95), round(photo_risk / 100.0, 2) if photo_risk > 0 else 0.94))
-            doc_face_inds = gemini_face.get("indicators") or ["Potential AI generation or synthetic portrait", "Forensic boundary/substrate anomaly"]
+            doc_face_conf = float(max(gemini_face.get("confidence", 0.90), round(photo_risk / 100.0, 2) if photo_risk > 0 else 0.88))
+            doc_face_inds = gemini_face.get("indicators") or ["Forensic boundary or substrate anomaly detected", "Potential image manipulation"]
             doc_face_expl = gemini_face.get("explanation") or "The portrait shows forensic markers of manipulation, digital splicing, or synthetic generation."
             gemini_face["photo_status"] = "Fake / Tampered Photo"
             gemini_face["is_real_photo"] = False
@@ -506,8 +511,12 @@ def analyze_screening(
         else:
             doc_face_st = "Real Photo"
             doc_face_conf = float(gemini_face.get("confidence", 0.95))
-            doc_face_inds = gemini_face.get("indicators", ["Consistent photographic substrate", "Natural lighting and contours"])
-            doc_face_expl = gemini_face.get("explanation") or "The document portrait is clear and verified authentic with no signs of manipulation."
+            doc_face_inds = list(gemini_face.get("indicators", ["Consistent photographic substrate", "Natural lighting and contours"]))
+            if other_faces_count > 0:
+                doc_face_inds.append(f"Other faces detected elsewhere in document: {other_faces_count} (substrate/graphic background observation)")
+                doc_face_expl = f"The primary document portrait is clear and verified authentic (1 genuine face). Note: {other_faces_count} additional secondary face region(s) noted elsewhere on the document substrate."
+            else:
+                doc_face_expl = gemini_face.get("explanation") or "The document portrait is clear and verified authentic with no signs of manipulation."
 
         # Optional 1:1 Face Verification against presented selfie/comparison image
         if screening.presented_face_path and os.path.exists(screening.presented_face_path):
@@ -589,8 +598,11 @@ def analyze_screening(
 
         # Document Face Analysis fields
         screening.face_detected = doc_face_detected
-        screening.faces_detected_count = faces_detected_count
-        screening.multiple_faces_detected = multiple_faces_detected
+        screening.faces_detected_count = primary_portrait_face_count
+        screening.primary_portrait_face_count = primary_portrait_face_count
+        screening.document_wide_face_count = document_wide_face_count
+        screening.other_faces_count = other_faces_count
+        screening.multiple_faces_detected = multiple_faces_in_portrait
         screening.face_quality = doc_face_quality
         screening.photo_region_detected = photo_reg_detected
         screening.doc_face_status = doc_face_st
@@ -613,12 +625,12 @@ def analyze_screening(
 
         # Synchronize tampering detection with facial anomaly and validation findings
         is_photo_clean = any(k in doc_face_st.lower() for k in ["real", "pass", "no obvious", "verified", "clean"])
-        is_face_altered = is_anomaly or (not is_photo_clean and ("fake" in doc_face_st.lower() or "tamper" in doc_face_st.lower())) or multiple_faces_detected
+        is_face_altered = is_anomaly or (not is_photo_clean and ("fake" in doc_face_st.lower() or "tamper" in doc_face_st.lower())) or multiple_faces_in_portrait
         if is_face_altered:
             tamp_result["modules"]["photo_replacement"]["photo_replacement_detected"] = True
             tamp_result["modules"]["photo_replacement"]["status"] = "Failed"
             if not any("replacement" in ind.lower() or "splicing" in ind.lower() or "faces" in ind.lower() for ind in tamp_result["modules"]["photo_replacement"]["indicators"]):
-                tamp_result["modules"]["photo_replacement"]["indicators"].insert(0, f"Facial portrait anomaly: {'Multiple faces detected on document' if multiple_faces_detected else 'Digital splicing or synthetic generation detected'}.")
+                tamp_result["modules"]["photo_replacement"]["indicators"].insert(0, f"Facial portrait anomaly: {'Multiple faces detected inside portrait' if multiple_faces_in_portrait else 'Digital splicing or synthetic generation detected'}.")
             tamp_result["tampering_score"] = max(tamp_result.get("tampering_score", 0.0), 65.0)
             tamp_result["status"] = "Tampering Anomaly Detected"
 
@@ -654,7 +666,7 @@ def analyze_screening(
             score >= 50.0 or
             tamp_result.get("tampering_score", 0) >= 45.0 or
             is_face_altered or
-            multiple_faces_detected or
+            multiple_faces_in_portrait or
             multi_id_check.get("multiple_identities_detected") or
             is_blacklisted_doc or
             is_sample_specimen or
@@ -679,8 +691,8 @@ def analyze_screening(
                 ]
             elif is_dob_fraud:
                 auth_reasons = ["Biographical anomaly: Chronological date of birth fraud detected."]
-            elif multiple_faces_detected:
-                auth_reasons = [f"Multiple facial portraits detected ({faces_detected_count} faces). Breach of identity credential standards."]
+            elif multiple_faces_in_portrait:
+                auth_reasons = [f"Multiple facial portraits detected inside primary photo region ({primary_portrait_face_count} faces). Breach of identity credential standards."]
             elif multi_id_check.get("multiple_identities_detected"):
                 auth_reasons = ["Facial biometric embedding matches alternate identity persona in border database."]
             elif has_gemini_tampering or tamp_result.get("tampering_score", 0) >= 45.0:
@@ -736,8 +748,11 @@ def analyze_screening(
                     "document_photo_extracted": doc_face_detected,
                     "photo_status": doc_face_st,
                     "confidence": doc_face_conf,
-                    "faces_detected_count": faces_detected_count,
-                    "multiple_faces_detected": multiple_faces_detected,
+                    "faces_detected_count": primary_portrait_face_count,
+                    "primary_portrait_face_count": primary_portrait_face_count,
+                    "document_wide_face_count": document_wide_face_count,
+                    "other_faces_count": other_faces_count,
+                    "multiple_faces_detected": multiple_faces_in_portrait,
                     "face_verification_performed": screening.face_verification_performed,
                     "face_verification_status": screening.face_verification_status,
                     "face_verification_similarity": screening.face_verification_similarity,
@@ -785,8 +800,6 @@ def get_screening_detail(
         screening = db.query(Screening).filter(Screening.screening_id == screening_identifier).first()
     if not screening:
         raise HTTPException(status_code=404, detail="Screening record not found")
-    if not screening:
-        raise HTTPException(status_code=404, detail="Screening record not found")
 
     # Strict RBAC: non-admin users cannot access other users' screenings
     if (current_user.role or "").lower() == "user":
@@ -830,6 +843,10 @@ def get_screening_detail(
         elif default_crop_file.exists():
             doc_face_crop_url = f"/uploads/documents/{screening.screening_id}_face_crop.jpg"
 
+    p_count = screening.primary_portrait_face_count if screening.primary_portrait_face_count is not None else (screening.faces_detected_count or (1 if is_face_detected else 0))
+    d_count = screening.document_wide_face_count if screening.document_wide_face_count is not None else (screening.faces_detected_count or (1 if is_face_detected else 0))
+    o_count = screening.other_faces_count if screening.other_faces_count is not None else max(0, d_count - p_count)
+
     return {
         "id": screening.id,
         "screening_id": screening.screening_id,
@@ -860,7 +877,10 @@ def get_screening_detail(
         
         # Document Face Analysis (Always run on ID's embedded face)
         "face_detected": is_face_detected,
-        "faces_detected_count": screening.faces_detected_count if screening.faces_detected_count is not None else (1 if is_face_detected else 0),
+        "faces_detected_count": p_count,
+        "primary_portrait_face_count": p_count,
+        "document_wide_face_count": d_count,
+        "other_faces_count": o_count,
         "multiple_faces_detected": bool(screening.multiple_faces_detected),
         "face_quality": screening.face_quality or ("Good" if is_face_detected else "Inconclusive"),
         "photo_region_detected": bool(screening.photo_region_detected) if is_face_detected else False,

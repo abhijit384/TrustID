@@ -253,6 +253,47 @@ def _compute_iou(boxA: Tuple[int, int, int, int], boxB: Tuple[int, int, int, int
         return 0.0
     return interArea / unionArea
 
+def _is_same_physical_face(boxA: Tuple[int, int, int, int], boxB: Tuple[int, int, int, int]) -> bool:
+    """
+    Determines if two bounding boxes represent the same physical human face.
+    Handles multi-scale pyramids, candidate quadrant offsets, and aspect ratio variations.
+    """
+    xA, yA, wA, hA = boxA
+    xB, yB, wB, hB = boxB
+
+    if wA <= 0 or hA <= 0 or wB <= 0 or hB <= 0:
+        return False
+
+    # 1. Standard IoU Check
+    iou = _compute_iou(boxA, boxB)
+    if iou >= 0.25:
+        return True
+
+    # 2. Containment Check (one box is largely inside the other)
+    x_inter = max(0, min(xA + wA, xB + wB) - max(xA, xB))
+    y_inter = max(0, min(yA + hA, yB + hB) - max(yA, yB))
+    inter_area = x_inter * y_inter
+    min_area = min(wA * hA, wB * hB)
+    if min_area > 0 and (inter_area / float(min_area)) >= 0.40:
+        return True
+
+    # 3. Center Proximity Check
+    cA_x = xA + wA / 2.0
+    cA_y = yA + hA / 2.0
+    cB_x = xB + wB / 2.0
+    cB_y = yB + hB / 2.0
+
+    max_w = max(wA, wB)
+    max_h = max(hA, hB)
+
+    dist_x = abs(cA_x - cB_x)
+    dist_y = abs(cA_y - cB_y)
+
+    if dist_x < (0.55 * max_w) and dist_y < (0.55 * max_h):
+        return True
+
+    return False
+
 def _expand_face_to_portrait_region(
     img_w: int,
     img_h: int,
@@ -292,8 +333,9 @@ def detect_and_crop_document_face(
     Two-Stage Human Face Detection & Portrait Extraction Engine:
     ----------------------------------------------------------
     Stage 1: Candidate Portrait Region Localization (Path B) + Full-Page Multi-scale Search (Path A)
-    Stage 2: Strict Human Face Detection & Landmark Verification
-    Stage 3: Portrait Framing, Crop Verification & Physical Quality Forensics
+    Stage 2: Strict Human Face Detection & Center-Proximity Deduplication
+    Stage 3: Dedicated Primary Portrait Crop Analysis (Separating portrait face vs document-wide faces)
+    Stage 4: Portrait Framing, Crop Verification & Physical Quality Forensics
     """
     if not doc_image_path or not os.path.exists(doc_image_path):
         logger.warning(f"[FACE_ANALYSIS] Document image path not found: {doc_image_path}")
@@ -302,7 +344,11 @@ def detect_and_crop_document_face(
             "face_crop_available": False,
             "photo_region_detected": False,
             "faces_detected_count": 0,
+            "primary_portrait_face_count": 0,
+            "document_wide_face_count": 0,
+            "other_faces_count": 0,
             "multiple_faces_detected": False,
+            "multiple_faces_in_portrait": False,
             "all_face_boxes": [],
             "face_quality": "Inconclusive",
             "box": None,
@@ -372,6 +418,8 @@ def detect_and_crop_document_face(
                 cand_faces = _detect_faces_rfb(cand_crop, conf_thresh=0.65)
 
             for (score, (lfx, lfy, lfw, lfh)) in cand_faces:
+                if lfw < 16 or lfh < 16:
+                    continue
                 orig_fx = x1 + lfx
                 orig_fy = y1 + lfy
                 face_box = (orig_fx, orig_fy, lfw, lfh)
@@ -405,6 +453,8 @@ def detect_and_crop_document_face(
                 orig_fy = int(round(sfy / scale))
                 orig_fw = int(round(sfw / scale))
                 orig_fh = int(round(sfh / scale))
+                if orig_fw < 16 or orig_fh < 16:
+                    continue
                 face_box = (orig_fx, orig_fy, orig_fw, orig_fh)
                 
                 crop_test = img_bgr[orig_fy:orig_fy+orig_fh, orig_fx:orig_fx+orig_fw]
@@ -420,28 +470,26 @@ def detect_and_crop_document_face(
                 })
 
         # -------------------------------------------------------------
-        # MERGE & DEDUPLICATE DETECTIONS (NMS)
+        # MERGE & DEDUPLICATE DETECTIONS (NMS + PROXIMITY CLUSTERING)
         # -------------------------------------------------------------
-        validated_detections.sort(key=lambda d: d["score"], reverse=True)
+        validated_detections.sort(key=lambda d: (d["score"], d["face_box"][2] * d["face_box"][3]), reverse=True)
         unique_detections = []
         for det in validated_detections:
             f_box = det["face_box"]
             is_dup = False
             for u in unique_detections:
-                iou = _compute_iou(f_box, u["face_box"])
-                if iou > 0.40:
+                if _is_same_physical_face(f_box, u["face_box"]):
                     is_dup = True
                     break
             if not is_dup:
                 unique_detections.append(det)
 
-        faces_count = len(unique_detections)
-        multiple_faces = faces_count > 1
+        document_wide_face_count = len(unique_detections)
 
         # -------------------------------------------------------------
         # STRICT ZERO-FACE RULE
         # -------------------------------------------------------------
-        if faces_count == 0:
+        if document_wide_face_count == 0:
             logger.info(f"[FACE_ANALYSIS] No human face detected in {os.path.basename(doc_image_path)}.")
             if output_crop_path and os.path.exists(output_crop_path):
                 try:
@@ -453,7 +501,11 @@ def detect_and_crop_document_face(
                 "face_crop_available": False,
                 "photo_region_detected": False,
                 "faces_detected_count": 0,
+                "primary_portrait_face_count": 0,
+                "document_wide_face_count": 0,
+                "other_faces_count": 0,
                 "multiple_faces_detected": False,
+                "multiple_faces_in_portrait": False,
                 "all_face_boxes": [],
                 "face_quality": "Inconclusive",
                 "box": None,
@@ -461,6 +513,7 @@ def detect_and_crop_document_face(
                 "reason": "No human face was detected in the submitted document."
             }
 
+        # Select primary portrait detection
         primary_det = unique_detections[0]
         p_score = primary_det["score"]
         px, py, pw, ph = primary_det["portrait_box"]
@@ -481,7 +534,11 @@ def detect_and_crop_document_face(
                 "face_crop_available": False,
                 "photo_region_detected": False,
                 "faces_detected_count": 0,
+                "primary_portrait_face_count": 0,
+                "document_wide_face_count": 0,
+                "other_faces_count": 0,
                 "multiple_faces_detected": False,
+                "multiple_faces_in_portrait": False,
                 "all_face_boxes": [],
                 "face_quality": "Inconclusive",
                 "box": None,
@@ -503,17 +560,50 @@ def detect_and_crop_document_face(
                 logger.error(f"[FACE_ANALYSIS] Error saving face crop: {save_err}")
 
         crop_np = cv2.cvtColor(np.array(portrait_crop_pil), cv2.COLOR_RGB2BGR)
+
+        # -------------------------------------------------------------
+        # DEDICATED PRIMARY PORTRAIT CROP FACE ANALYSIS
+        # -------------------------------------------------------------
+        # Count human faces INSIDE the isolated portrait crop
+        portrait_faces = _detect_faces_yunet(crop_np, score_thresh=0.30)
+        if not portrait_faces:
+            crop_enhanced = _enhance_contrast(crop_np)
+            portrait_faces = _detect_faces_yunet(crop_enhanced, score_thresh=0.26)
+        if not portrait_faces:
+            portrait_faces = _detect_faces_rfb(crop_np, conf_thresh=0.65)
+
+        # Merge duplicate detections inside the crop
+        unique_crop_faces = []
+        for (sc, (cfx, cfy, cfw, cfh)) in portrait_faces:
+            if cfw < 15 or cfh < 15:
+                continue
+            is_crop_dup = False
+            for u in unique_crop_faces:
+                if _is_same_physical_face((cfx, cfy, cfw, cfh), u[1]):
+                    is_crop_dup = True
+                    break
+            if not is_crop_dup:
+                unique_crop_faces.append((sc, (cfx, cfy, cfw, cfh)))
+
+        if len(unique_crop_faces) > 0:
+            primary_portrait_face_count = len(unique_crop_faces)
+        else:
+            primary_portrait_face_count = 1
+
+        other_faces_count = max(0, document_wide_face_count - 1)
+        multiple_faces_in_portrait = bool(primary_portrait_face_count > 1)
+
         gray_crop = cv2.cvtColor(crop_np, cv2.COLOR_BGR2GRAY)
         blur_variance = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
         brightness = float(gray_crop.mean())
         contrast = float(gray_crop.std())
 
-        if multiple_faces:
-            quality = "Multiple Faces Detected"
-        elif blur_variance < 20.0 or brightness < 25.0 or contrast < 12.0:
-            quality = "Fair"
+        if multiple_faces_in_portrait:
+            quality = "Multiple Faces in Portrait"
         elif blur_variance < 8.0:
             quality = "Insufficient"
+        elif blur_variance < 20.0 or brightness < 25.0 or contrast < 12.0:
+            quality = "Fair"
         else:
             quality = "Good"
 
@@ -541,7 +631,8 @@ def detect_and_crop_document_face(
             })
 
         logger.info(
-            f"[FACE_ANALYSIS] Face detection SUCCESS: faces_count={faces_count}, "
+            f"[FACE_ANALYSIS] Face detection SUCCESS: portrait_faces={primary_portrait_face_count}, "
+            f"doc_wide_faces={document_wide_face_count}, other_faces={other_faces_count}, "
             f"confidence={float(p_score):.3f}, crop={c_w}x{c_h}px, quality={quality}"
         )
 
@@ -549,8 +640,12 @@ def detect_and_crop_document_face(
             "face_detected": True,
             "face_crop_available": crop_save_success or (output_crop_path is None),
             "photo_region_detected": True,
-            "faces_detected_count": int(faces_count),
-            "multiple_faces_detected": bool(multiple_faces),
+            "faces_detected_count": int(primary_portrait_face_count),
+            "primary_portrait_face_count": int(primary_portrait_face_count),
+            "document_wide_face_count": int(document_wide_face_count),
+            "other_faces_count": int(other_faces_count),
+            "multiple_faces_detected": bool(multiple_faces_in_portrait),
+            "multiple_faces_in_portrait": bool(multiple_faces_in_portrait),
             "all_face_boxes": all_boxes_formatted,
             "face_quality": quality,
             "box": norm_box,
@@ -568,7 +663,11 @@ def detect_and_crop_document_face(
             "face_crop_available": False,
             "photo_region_detected": False,
             "faces_detected_count": 0,
+            "primary_portrait_face_count": 0,
+            "document_wide_face_count": 0,
+            "other_faces_count": 0,
             "multiple_faces_detected": False,
+            "multiple_faces_in_portrait": False,
             "all_face_boxes": [],
             "face_quality": "Inconclusive",
             "box": None,

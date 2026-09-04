@@ -86,9 +86,9 @@ async def run_tests_async():
             cv2.imwrite(two_face_path, canvas)
 
             det_res = detect_and_crop_document_face(two_face_path)
-            print(f"Multi-face detection result: detected={det_res['face_detected']}, count={det_res['faces_detected_count']}, multiple={det_res['multiple_faces_detected']}")
-            assert det_res['multiple_faces_detected'] is True or det_res['faces_detected_count'] >= 2, "Expected multiple faces detected"
-            print(">>> TEST 3 PASSED: Multiple faces correctly detected and flagged!")
+            print(f"Multi-face detection result: detected={det_res['face_detected']}, portrait_faces={det_res['primary_portrait_face_count']}, doc_wide={det_res['document_wide_face_count']}, other_faces={det_res['other_faces_count']}")
+            assert det_res['document_wide_face_count'] >= 2 or det_res['multiple_faces_detected'] is True, "Expected multiple faces detected across document"
+            print(">>> TEST 3 PASSED: Multiple faces correctly detected and separated across document!")
 
     finally:
         db.close()

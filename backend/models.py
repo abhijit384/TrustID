@@ -68,6 +68,9 @@ class Screening(Base):
     # Document Face Analysis (Always run on ID's embedded face)
     face_detected = Column(Boolean, default=True)
     faces_detected_count = Column(Integer, default=1)
+    primary_portrait_face_count = Column(Integer, default=1)
+    document_wide_face_count = Column(Integer, default=1)
+    other_faces_count = Column(Integer, default=0)
     multiple_faces_detected = Column(Boolean, default=False)
     face_quality = Column(String(50), default="Good")  # Good, Fair, Insufficient
     photo_region_detected = Column(Boolean, default=True)

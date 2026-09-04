@@ -8,14 +8,19 @@ import {
   Camera, 
   Sparkles, 
   Maximize2, 
-  Eye,
-  Activity,
-  ImageOff
+  Eye, 
+  Activity, 
+  ImageOff,
+  Users,
+  Info
 } from 'lucide-react';
 import { getMediaUrl } from '../services/api';
 
 export const DocumentFaceAnalysis = ({
   faceDetected = false,
+  primaryFaceCount = 1,
+  documentWideFaceCount = 1,
+  otherFacesCount = 0,
   faceQuality = "Inconclusive",
   photoRegionDetected = false,
   status = "Inconclusive",
@@ -51,6 +56,10 @@ export const DocumentFaceAnalysis = ({
   const isGoodQuality = faceDetected && faceQuality?.toLowerCase() === "good";
   const confPct = Math.round((confidence || 0.95) * 100);
 
+  const effectivePrimaryCount = faceDetected ? (primaryFaceCount || 1) : 0;
+  const effectiveOtherCount = faceDetected ? (otherFacesCount || 0) : 0;
+  const effectiveDocWideCount = faceDetected ? (documentWideFaceCount || effectivePrimaryCount + effectiveOtherCount) : 0;
+
   const displayStatus = isNoFace
     ? "Inconclusive (No Face Detected)"
     : isFakePhoto
@@ -81,7 +90,7 @@ export const DocumentFaceAnalysis = ({
             </span>
           </div>
           <p className="text-xs text-slate-400 mt-1">
-            Automated forensic visual analysis of the portrait embedded in the credential (no secondary comparison photo needed).
+            Automated forensic visual analysis of the primary embedded credential portrait (isolated from background artifacts).
           </p>
         </div>
 
@@ -135,70 +144,83 @@ export const DocumentFaceAnalysis = ({
 
           <p className="text-[11px] text-slate-400 leading-relaxed">
             {faceDetected 
-              ? "Cropped directly from the embedded photograph region in the uploaded ID."
+              ? "Cropped directly from the primary embedded photograph region in the uploaded ID."
               : "No facial photograph detected in the uploaded document."}
           </p>
         </div>
 
         {/* Right Columns: Core Forensic Checkpoints Matrix */}
         <div className="md:col-span-2 space-y-4">
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            {/* 1. Face Detected */}
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
+            {/* 1. Face in Portrait */}
             <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-              <span className="text-[10px] font-mono uppercase text-slate-400 block">Face Detected</span>
-              <p className="text-base font-bold text-white mt-0.5 flex items-center gap-1.5 font-mono">
+              <span className="text-[10px] font-mono uppercase text-slate-400 block truncate">Face Detected</span>
+              <p className="text-sm font-bold text-white mt-1 flex items-center gap-1.5 font-mono">
                 {faceDetected ? (
                   <>
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
                     <span>YES</span>
                   </>
                 ) : (
                   <>
-                    <AlertTriangle className="w-4 h-4 text-rose-400" />
+                    <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0" />
                     <span>NO</span>
                   </>
                 )}
               </p>
             </div>
 
-            {/* 2. Photo Region */}
+            {/* 2. Faces in Primary Portrait */}
             <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-              <span className="text-[10px] font-mono uppercase text-slate-400 block">Photo Region</span>
-              <p className="text-base font-bold text-white mt-0.5 flex items-center gap-1.5 font-mono">
-                {photoRegionDetected ? (
-                  <>
-                    <CheckCircle2 className="w-4 h-4 text-emerald-400" />
-                    <span>Detected</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertTriangle className="w-4 h-4 text-amber-400" />
-                    <span>Missing</span>
-                  </>
-                )}
+              <span className="text-[10px] font-mono uppercase text-slate-400 block truncate">Portrait Faces</span>
+              <p className="text-sm font-bold text-cyan-400 mt-1 font-mono flex items-center gap-1">
+                <User className="w-3.5 h-3.5 text-cyan-400 shrink-0" />
+                <span>{effectivePrimaryCount}</span>
               </p>
             </div>
 
-            {/* 3. Face Quality */}
+            {/* 3. Other Faces in Document */}
             <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-              <span className="text-[10px] font-mono uppercase text-slate-400 block">Face Quality</span>
-              <p className={`text-base font-bold mt-0.5 font-mono ${
+              <span className="text-[10px] font-mono uppercase text-slate-400 block truncate">Other Faces</span>
+              <p className="text-sm font-bold text-slate-300 mt-1 font-mono flex items-center gap-1">
+                <Users className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                <span>{effectiveOtherCount}</span>
+              </p>
+            </div>
+
+            {/* 4. Face Quality */}
+            <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
+              <span className="text-[10px] font-mono uppercase text-slate-400 block truncate">Face Quality</span>
+              <p className={`text-sm font-bold mt-1 font-mono truncate ${
                 isGoodQuality ? 'text-emerald-300' : 'text-amber-300'
               }`}>
                 {faceQuality}
               </p>
             </div>
 
-            {/* 4. Photo Integrity */}
+            {/* 5. Photo Integrity */}
             <div className="p-3 rounded-xl bg-slate-900/60 border border-slate-800">
-              <span className="text-[10px] font-mono uppercase text-slate-400 block">Photo Integrity</span>
-              <p className={`text-xs font-bold mt-1 font-mono truncate ${
+              <span className="text-[10px] font-mono uppercase text-slate-400 block truncate">Photo Integrity</span>
+              <p className={`text-xs font-bold mt-1.5 font-mono truncate ${
                 isFakePhoto ? 'text-rose-400' : isNoFace ? 'text-amber-400' : 'text-emerald-400'
               }`}>
                 {displayStatus}
               </p>
             </div>
           </div>
+
+          {/* Optional Observation Banner when other faces exist elsewhere in document */}
+          {faceDetected && effectiveOtherCount > 0 && (
+            <div className="p-3 rounded-xl bg-cyan-950/30 border border-cyan-800/40 flex items-start gap-2 text-xs text-cyan-200">
+              <Info className="w-4 h-4 text-cyan-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-semibold font-mono text-cyan-300">Observation: </span>
+                <span>
+                  {effectiveOtherCount} additional secondary face-like region{effectiveOtherCount > 1 ? 's' : ''} detected on document substrate. The primary portrait photograph was analyzed separately and verified authentic.
+                </span>
+              </div>
+            </div>
+          )}
 
           {/* Detailed Observations & Indicators */}
           <div className="p-4 rounded-xl bg-slate-900/80 border border-slate-800 space-y-2">
