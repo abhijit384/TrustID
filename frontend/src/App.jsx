@@ -21,6 +21,8 @@ import { Settings } from './pages/Settings';
 import { Profile } from './pages/Profile';
 import { AccessRestricted } from './pages/AccessRestricted';
 
+import { ErrorBoundary } from './components/ErrorBoundary';
+
 // Route protection component enforcing real RBAC
 const ProtectedLayout = ({ children, requiredAdmin = false }) => {
   const { user, isAdmin } = useAuth();
@@ -45,7 +47,9 @@ const ProtectedLayout = ({ children, requiredAdmin = false }) => {
 
         {/* Scrollable Main Content Body */}
         <main className="flex-1 mt-16 p-8 max-w-7xl w-full mx-auto">
-          {isUnauthorized ? <AccessRestricted /> : children}
+          <ErrorBoundary>
+            {isUnauthorized ? <AccessRestricted /> : children}
+          </ErrorBoundary>
         </main>
       </div>
     </div>

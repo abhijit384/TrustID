@@ -292,6 +292,13 @@ export const Analysis = () => {
   const tampModules = borderCheckpoint.module3_tampering?.modules || {};
   const multiIdCheck = borderCheckpoint.module4_face_verification?.multiple_identities_check || {};
 
+  // Authenticity & Confidence resolution
+  const authConf = (screening.authenticity_confidence !== null && screening.authenticity_confidence !== undefined)
+    ? Math.round(screening.authenticity_confidence * 100)
+    : (findings.authenticity_assessment?.confidence ? Math.round(findings.authenticity_assessment.confidence * 100) : null);
+  const authReasons = screening.authenticity_reasons || findings.authenticity_assessment?.reasons || [];
+  const decisionTrace = explain.decision_trace || findings.decision_trace || {};
+
   // Canonical Overall Document Status resolution
   const rawStatus = (screening.overall_document_status || screening.document_status || screening.authenticity_classification || findings.authenticity_assessment?.classification || "").toUpperCase();
 
@@ -307,6 +314,8 @@ export const Analysis = () => {
       : isInconclusiveDoc
         ? "INCONCLUSIVE"
         : "REAL DOCUMENT";
+
+  const authClass = overallDocumentStatus;
 
   const internalAuthResult = isInvalidDoc
     ? "INVALID DOCUMENT"
