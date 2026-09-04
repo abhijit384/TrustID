@@ -59,35 +59,39 @@ def _validate_facial_landmarks(fc: np.ndarray) -> bool:
         return True
     try:
         fw, fh = float(fc[2]), float(fc[3])
-        if fw < 10 or fh < 10:
+        if fw < 12 or fh < 12:
             return False
 
-        x_re, y_re = float(fc[4]), float(fc[5])    # right eye
-        x_le, y_le = float(fc[6]), float(fc[7])    # left eye
+        x_re, y_re = float(fc[4]), float(fc[5])    # right eye (viewer's left)
+        x_le, y_le = float(fc[6]), float(fc[7])    # left eye (viewer's right)
         x_nt, y_nt = float(fc[8]), float(fc[9])    # nose tip
         x_rcm, y_rcm = float(fc[10]), float(fc[11]) # right mouth corner
         x_lcm, y_lcm = float(fc[12]), float(fc[13]) # left mouth corner
 
         # 1. Eye separation distance
         eye_dist = float(np.sqrt((x_le - x_re)**2 + (y_le - y_re)**2))
-        if eye_dist < 0.08 * fw or eye_dist > 0.95 * fw:
+        if eye_dist < 0.16 * fw or eye_dist > 0.88 * fw:
             return False
 
-        # 2. Eye level must be above mouth level
+        # 2. Eye level must be strictly above mouth level
         avg_eye_y = (y_re + y_le) / 2.0
         avg_mouth_y = (y_rcm + y_lcm) / 2.0
-        if avg_mouth_y <= (avg_eye_y + 0.04 * fh):
+        if avg_mouth_y <= (avg_eye_y + 0.08 * fh):
             return False
 
         # 3. Nose tip should be between eyes and mouth vertically
-        if y_nt < (avg_eye_y - 0.20 * fh) or y_nt > (avg_mouth_y + 0.20 * fh):
+        if y_nt < (avg_eye_y - 0.05 * fh) or y_nt > (avg_mouth_y + 0.05 * fh):
+            return False
+
+        # 4. Horizontal ordering: left eye to right of right eye, left mouth to right of right mouth
+        if x_le <= (x_re + 0.05 * fw) or x_lcm <= (x_rcm + 0.05 * fw):
             return False
 
         return True
     except Exception:
         return True
 
-def _detect_faces_rfb(img_bgr: np.ndarray, conf_thresh: float = 0.65) -> List[Tuple[float, Tuple[int, int, int, int]]]:
+def _detect_faces_rfb(img_bgr: np.ndarray, conf_thresh: float = 0.70) -> List[Tuple[float, Tuple[int, int, int, int]]]:
     """Secondary detector: Ultra-Light RFB-320 ONNX detector."""
     net = _get_rfb_net()
     if net is None:
@@ -115,7 +119,8 @@ def _detect_faces_rfb(img_bgr: np.ndarray, conf_thresh: float = 0.65) -> List[Tu
                 y2 = min(h, int(box[3] * h))
                 bw = x2 - x1
                 bh = y2 - y1
-                if bw >= 12 and bh >= 12:
+                aspect = float(bh) / float(max(1, bw))
+                if bw >= 14 and bh >= 14 and 0.65 <= aspect <= 1.80:
                     detected.append((score, (x1, y1, bw, bh)))
         return detected
     except Exception as ex:
@@ -302,32 +307,43 @@ def _is_same_physical_face(boxA: Tuple[int, int, int, int], boxB: Tuple[int, int
 def _expand_face_to_portrait_region(
     img_w: int,
     img_h: int,
-    face_box: Tuple[int, int, int, int],
-    containing_region: Optional[Tuple[int, int, int, int]] = None
+    face_box: Tuple[int, int, int, int]
 ) -> Tuple[int, int, int, int]:
-    """Expands a tightly detected human face box into a natural document portrait photograph crop."""
+    """
+    Expands a tightly detected human face box into a natural document portrait photograph crop.
+    The face bounding box is the sole source of truth for the crop framing.
+    """
     fx, fy, fw, fh = face_box
+    cx = fx + (fw / 2.0)
+    cy = fy + (fh / 2.0)
 
-    if containing_region:
-        cx, cy, cw, ch = containing_region
-        if cw >= fw and ch >= fh and (cw * ch) <= (fw * fh * 4.5):
-            return (
-                max(0, cx),
-                max(0, cy),
-                min(img_w - max(0, cx), cw),
-                min(img_h - max(0, cy), ch)
-            )
+    # Standard ID photo ratio 4:5 (e.g. 35mm x 45mm)
+    portrait_w = max(int(round(fw * 1.7)), int(round(fh * 1.35)))
+    portrait_h = int(round(portrait_w * 1.25))
 
-    pad_top = int(fh * 0.35)
-    pad_bottom = int(fh * 0.40)
-    pad_sides = int(fw * 0.28)
+    # Frame face so eyes/nose are centered with natural headroom (~38% from top)
+    x1 = int(round(cx - (portrait_w / 2.0)))
+    y1 = int(round(cy - (portrait_h * 0.38)))
+    x2 = x1 + portrait_w
+    y2 = y1 + portrait_h
 
-    x1 = max(0, fx - pad_sides)
-    y1 = max(0, fy - pad_top)
-    x2 = min(img_w, fx + fw + pad_sides)
-    y2 = min(img_h, fy + fh + pad_bottom)
+    # Clamping with boundary preservation
+    if x1 < 0:
+        x2 = min(img_w, x2 - x1)
+        x1 = 0
+    if y1 < 0:
+        y2 = min(img_h, y2 - y1)
+        y1 = 0
+    if x2 > img_w:
+        x1 = max(0, x1 - (x2 - img_w))
+        x2 = img_w
+    if y2 > img_h:
+        y1 = max(0, y1 - (y2 - img_h))
+        y2 = img_h
 
-    return (x1, y1, x2 - x1, y2 - y1)
+    pw = max(15, x2 - x1)
+    ph = max(15, y2 - y1)
+    return (x1, y1, pw, ph)
 
 def detect_and_crop_document_face(
     doc_image_path: str,
@@ -335,12 +351,15 @@ def detect_and_crop_document_face(
     output_crop_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Two-Stage Human Face Detection & Portrait Extraction Engine:
-    ----------------------------------------------------------
-    Stage 1: Candidate Portrait Region Localization (Path B) + Full-Page Multi-scale Search (Path A)
-    Stage 2: Strict Human Face Detection & Center-Proximity Deduplication
-    Stage 3: Dedicated Primary Portrait Crop Analysis (Separating portrait face vs document-wide faces)
-    Stage 4: Portrait Framing, Crop Verification & Physical Quality Forensics
+    Robust Two-Stage Human Face Detection & Portrait Extraction Engine:
+    -------------------------------------------------------------------
+    1. Localize all genuine human face candidates (via YuNet landmark verification and RFB-320).
+    2. Deduplicate face candidates across the document image.
+    3. Select the Primary Document Portrait face based on size and confidence.
+    4. Generate portrait crop strictly centered on the verified face bounding box.
+    5. Mandatory second-pass validation: run face detection directly on the resulting crop.
+       If the crop fails verification, retry with a tight crop or reject (do NOT output a non-face graphic).
+    6. Ensure QR codes, stamps, seals, signatures, and document graphics are never displayed as a face crop.
     """
     if not doc_image_path or not os.path.exists(doc_image_path):
         logger.warning(f"[FACE_ANALYSIS] Document image path not found: {doc_image_path}")
@@ -402,7 +421,7 @@ def detect_and_crop_document_face(
         validated_detections = []
 
         # -------------------------------------------------------------
-        # PATH B: TEST PROPOSED CANDIDATE PORTRAIT REGIONS FIRST
+        # PATH B: TEST PROPOSED CANDIDATE PORTRAIT REGIONS
         # -------------------------------------------------------------
         candidates = _propose_candidate_regions(img_bgr, ai_box_coords=ai_box_coords)
         for (cx, cy, cw, ch) in candidates:
@@ -426,15 +445,21 @@ def detect_and_crop_document_face(
                 cand_faces = _detect_faces_yunet(cand_enhanced, score_thresh=0.25)
                 del cand_enhanced
             if not cand_faces:
-                cand_faces = _detect_faces_rfb(cand_crop, conf_thresh=0.65)
+                cand_faces = _detect_faces_rfb(cand_crop, conf_thresh=0.70)
 
             for (score, (lfx, lfy, lfw, lfh)) in cand_faces:
-                if lfw < 16 or lfh < 16:
+                if lfw < 12 or lfh < 12:
                     continue
                 orig_fx = x1 + lfx
                 orig_fy = y1 + lfy
                 face_box = (orig_fx, orig_fy, lfw, lfh)
-                portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box, containing_region=(x1, y1, x2 - x1, y2 - y1))
+                
+                # Check for QR / barcode at face coordinates
+                face_sample = img_bgr[orig_fy:orig_fy+lfh, orig_fx:orig_fx+lfw]
+                if _is_qr_or_barcode(face_sample):
+                    continue
+
+                portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box)
                 validated_detections.append({
                     "score": score,
                     "face_box": face_box,
@@ -443,7 +468,7 @@ def detect_and_crop_document_face(
                 })
 
         # -------------------------------------------------------------
-        # PATH A: FULL-PAGE SINGLE-SCALE DETECTION (NO MASSIVE MULTI-SCALE UPSCALE)
+        # PATH A: FULL-PAGE FACE DETECTION
         # -------------------------------------------------------------
         full_faces = _detect_faces_yunet(img_bgr, score_thresh=0.28)
         if not full_faces:
@@ -451,10 +476,10 @@ def detect_and_crop_document_face(
             full_faces = _detect_faces_yunet(full_enhanced, score_thresh=0.25)
             del full_enhanced
         if not full_faces:
-            full_faces = _detect_faces_rfb(img_bgr, conf_thresh=0.65)
+            full_faces = _detect_faces_rfb(img_bgr, conf_thresh=0.70)
 
         for (score, (sfx, sfy, sfw, sfh)) in full_faces:
-            if sfw < 16 or sfh < 16:
+            if sfw < 12 or sfh < 12:
                 continue
             face_box = (sfx, sfy, sfw, sfh)
             crop_test = img_bgr[sfy:sfy+sfh, sfx:sfx+sfw]
@@ -472,7 +497,13 @@ def detect_and_crop_document_face(
         # -------------------------------------------------------------
         # MERGE & DEDUPLICATE DETECTIONS (NMS + PROXIMITY CLUSTERING)
         # -------------------------------------------------------------
-        validated_detections.sort(key=lambda d: (d["score"], d["face_box"][2] * d["face_box"][3]), reverse=True)
+        # Rank by size (area) and detection confidence to prioritize the main document portrait
+        validated_detections.sort(
+            key=lambda d: (
+                (d["face_box"][2] * d["face_box"][3]) ** 0.5 + (float(d["score"]) * 60.0)
+            ),
+            reverse=True
+        )
         unique_detections = []
         for det in validated_detections:
             f_box = det["face_box"]
@@ -513,22 +544,63 @@ def detect_and_crop_document_face(
                 "reason": "No human face was detected in the submitted document."
             }
 
-        # Select primary portrait detection
+        # Select primary portrait detection (largest / most prominent face on ID)
         primary_det = unique_detections[0]
         p_score = primary_det["score"]
         px, py, pw, ph = primary_det["portrait_box"]
         fx, fy, fw, fh = primary_det["face_box"]
 
+        # Ensure bounds within image
         px = max(0, min(w_img - 1, px))
         py = max(0, min(h_img - 1, py))
         pw = max(15, min(w_img - px, pw))
         ph = max(15, min(h_img - py, ph))
 
-        portrait_crop_pil = pil_img.crop((px, py, px + pw, py + ph))
-        c_w, c_h = portrait_crop_pil.size
+        # -------------------------------------------------------------
+        # MANDATORY SECOND-PASS CROP VALIDATION
+        # -------------------------------------------------------------
+        crop_np = img_bgr[py:py+ph, px:px+pw]
+        if crop_np.size == 0 or crop_np.shape[0] < 15 or crop_np.shape[1] < 15 or _is_qr_or_barcode(crop_np):
+            crop_valid = False
+            verified_crop_faces = []
+        else:
+            # Run face detection directly on the cropped candidate image
+            crop_faces = _detect_faces_yunet(crop_np, score_thresh=0.28)
+            if not crop_faces:
+                crop_enhanced = _enhance_contrast(crop_np)
+                crop_faces = _detect_faces_yunet(crop_enhanced, score_thresh=0.25)
+                del crop_enhanced
+            if not crop_faces:
+                crop_faces = _detect_faces_rfb(crop_np, conf_thresh=0.68)
 
-        if c_w < 15 or c_h < 15:
-            logger.warning("[FACE_ANALYSIS] Crop dimensions too small.")
+            verified_crop_faces = crop_faces
+            crop_valid = bool(len(verified_crop_faces) > 0)
+
+        # Fallback if expanded crop didn't trigger: try tighter face crop around (fx, fy, fw, fh)
+        if not crop_valid:
+            tight_pad_x = int(fw * 0.25)
+            tight_pad_y = int(fh * 0.25)
+            tx1 = max(0, fx - tight_pad_x)
+            ty1 = max(0, fy - tight_pad_y)
+            tx2 = min(w_img, fx + fw + tight_pad_x)
+            ty2 = min(h_img, fy + fh + tight_pad_y)
+            tight_crop_np = img_bgr[ty1:ty2, tx1:tx2]
+            if tight_crop_np.size > 0 and not _is_qr_or_barcode(tight_crop_np):
+                tight_faces = _detect_faces_yunet(tight_crop_np, score_thresh=0.25) or _detect_faces_rfb(tight_crop_np, conf_thresh=0.65)
+                if tight_faces:
+                    px, py, pw, ph = tx1, ty1, tx2 - tx1, ty2 - ty1
+                    crop_np = tight_crop_np
+                    verified_crop_faces = tight_faces
+                    crop_valid = True
+
+        # If crop STILL fails validation, do NOT output a non-face graphic!
+        if not crop_valid:
+            logger.warning(f"[FACE_ANALYSIS] Proposed face crop at ({px},{py},{pw}x{ph}) failed second-pass facial verification.")
+            if output_crop_path and os.path.exists(output_crop_path):
+                try:
+                    os.remove(output_crop_path)
+                except Exception:
+                    pass
             return {
                 "face_detected": False,
                 "face_crop_available": False,
@@ -543,39 +615,13 @@ def detect_and_crop_document_face(
                 "face_quality": "Inconclusive",
                 "box": None,
                 "crop_path": None,
-                "reason": "Cropped face dimensions below minimum threshold."
+                "reason": "Cropped candidate region failed second-pass facial landmark and topological verification."
             }
 
-        final_crop_path = None
-        crop_save_success = False
-        if output_crop_path:
-            try:
-                os.makedirs(os.path.dirname(os.path.abspath(output_crop_path)), exist_ok=True)
-                portrait_crop_pil.save(output_crop_path, format="JPEG", quality=95)
-                if os.path.exists(output_crop_path) and os.path.getsize(output_crop_path) > 0:
-                    final_crop_path = output_crop_path
-                    crop_save_success = True
-                    logger.info(f"[FACE_ANALYSIS] Successfully saved face crop ({c_w}x{c_h}px) -> {output_crop_path}")
-            except Exception as save_err:
-                logger.error(f"[FACE_ANALYSIS] Error saving face crop: {save_err}")
-
-        crop_np = cv2.cvtColor(np.array(portrait_crop_pil), cv2.COLOR_RGB2BGR)
-
-        # -------------------------------------------------------------
-        # DEDICATED PRIMARY PORTRAIT CROP FACE ANALYSIS
-        # -------------------------------------------------------------
-        # Count human faces INSIDE the isolated portrait crop
-        portrait_faces = _detect_faces_yunet(crop_np, score_thresh=0.30)
-        if not portrait_faces:
-            crop_enhanced = _enhance_contrast(crop_np)
-            portrait_faces = _detect_faces_yunet(crop_enhanced, score_thresh=0.26)
-        if not portrait_faces:
-            portrait_faces = _detect_faces_rfb(crop_np, conf_thresh=0.65)
-
-        # Merge duplicate detections inside the crop
+        # Deduplicate faces inside the validated crop
         unique_crop_faces = []
-        for (sc, (cfx, cfy, cfw, cfh)) in portrait_faces:
-            if cfw < 15 or cfh < 15:
+        for (sc, (cfx, cfy, cfw, cfh)) in verified_crop_faces:
+            if cfw < 12 or cfh < 12:
                 continue
             is_crop_dup = False
             for u in unique_crop_faces:
@@ -585,13 +631,27 @@ def detect_and_crop_document_face(
             if not is_crop_dup:
                 unique_crop_faces.append((sc, (cfx, cfy, cfw, cfh)))
 
-        if len(unique_crop_faces) > 0:
-            primary_portrait_face_count = len(unique_crop_faces)
-        else:
-            primary_portrait_face_count = 1
-
+        primary_portrait_face_count = max(1, len(unique_crop_faces))
         other_faces_count = max(0, document_wide_face_count - 1)
         multiple_faces_in_portrait = bool(primary_portrait_face_count > 1)
+
+        # Save validated crop image
+        final_crop_path = None
+        crop_save_success = False
+        c_h, c_w = crop_np.shape[:2]
+        if output_crop_path:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(output_crop_path)), exist_ok=True)
+                crop_rgb = cv2.cvtColor(crop_np, cv2.COLOR_BGR2RGB)
+                portrait_crop_pil = Image.fromarray(crop_rgb)
+                portrait_crop_pil.save(output_crop_path, format="JPEG", quality=95)
+                if os.path.exists(output_crop_path) and os.path.getsize(output_crop_path) > 0:
+                    final_crop_path = output_crop_path
+                    crop_save_success = True
+                    logger.info(f"[FACE_ANALYSIS] Successfully saved verified face crop ({c_w}x{c_h}px) -> {output_crop_path}")
+                portrait_crop_pil.close()
+            except Exception as save_err:
+                logger.error(f"[FACE_ANALYSIS] Error saving face crop: {save_err}")
 
         gray_crop = cv2.cvtColor(crop_np, cv2.COLOR_BGR2GRAY)
         blur_variance = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
@@ -637,8 +697,7 @@ def detect_and_crop_document_face(
         )
 
         try:
-            portrait_crop_pil.close()
-            del portrait_crop_pil, crop_np, gray_crop, img_bgr
+            del crop_np, gray_crop, img_bgr
         except Exception:
             pass
         force_gc()
