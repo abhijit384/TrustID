@@ -102,7 +102,7 @@ def detect_stamp_forgery(image_path: str, gemini_data: Optional[Dict[str, Any]] 
     indicators = []
     is_forged = False
 
-    # Check Gemini multimodal visual evidence for stamp issues
+    # Check Gemini multimodal visual evidence for confirmed stamp forgery
     if gemini_data:
         tampering_data = gemini_data.get("tampering_analysis", {})
         raw_inds = tampering_data.get("indicators", [])
@@ -110,33 +110,15 @@ def detect_stamp_forgery(image_path: str, gemini_data: Optional[Dict[str, Any]] 
 
         for ind in raw_inds:
             ind_text = str(ind).lower()
-            if any(k in ind_text for k in ["stamp", "seal", "emboss", "ink", "consular", "visa stamp"]):
-                indicators.append(f"Observable stamp anomaly: {ind}")
-                is_forged = True
+            if any(k in ind_text for k in ["forged stamp", "fake seal", "tampered stamp", "stamp overlay", "counterfeit seal"]):
+                if not any(neg in ind_text for neg in ["no ", "not ", "none", "no obvious", "uniform"]):
+                    indicators.append(f"Observable stamp anomaly: {ind}")
+                    is_forged = True
 
-        if "stamp" in explanation or "seal" in explanation:
-            if any(k in explanation for k in ["tamper", "forge", "irregular", "fake", "altered"]):
+        if any(k in explanation for k in ["stamp forgery", "tampered stamp", "forged seal", "counterfeit seal"]):
+            if not any(neg in explanation for neg in ["no stamp", "no obvious", "passed", "no tampering"]):
                 is_forged = True
                 indicators.append("Consular stamp ink profile or placement shows irregular digital overlay.")
-
-    # Local computer vision check on circular seals / high-saturation stamp regions
-    try:
-        img = cv2.imread(image_path)
-        if img is not None:
-            hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-            # Detect typical red/violet consular ink
-            mask1 = cv2.inRange(hsv, np.array([0, 70, 50]), np.array([10, 255, 255]))
-            mask2 = cv2.inRange(hsv, np.array([160, 70, 50]), np.array([180, 255, 255]))
-            stamp_mask = mask1 | mask2
-            stamp_pixels = cv2.countNonZero(stamp_mask)
-            total_pixels = max(1, img.shape[0] * img.shape[1])
-            stamp_ratio = stamp_pixels / total_pixels
-            del img, hsv, mask1, mask2, stamp_mask
-
-            if stamp_ratio > 0.005 and not indicators:
-                indicators.append("Border entry/consular ink seal detected. Pigment variance within expected analog tolerance.")
-    except Exception as ex:
-        logger.warning(f"Stamp CV analysis note: {ex}")
 
     if not indicators:
         indicators.append("Official border seals and stamp impressions conform to standard saturation profiles.")
@@ -167,20 +149,23 @@ def detect_text_manipulation(image_path: str, gemini_data: Optional[Dict[str, An
         # Check for field mismatches or text manipulation notes
         for fv in field_verif:
             note = str(fv.get("note", "")).lower()
-            if any(k in note for k in ["font", "baseline", "alter", "manipulat", "patch", "mismatch", "inconsistent"]):
-                indicators.append(f"Text field disparity on '{fv.get('field', 'Field')}': {fv.get('note')}")
-                is_manipulated = True
+            if any(k in note for k in ["font mismatch", "altered text", "tampered date", "character replacement", "pasted text"]):
+                if not any(neg in note for neg in ["no ", "not ", "match", "verified"]):
+                    indicators.append(f"Text field disparity on '{fv.get('field', 'Field')}': {fv.get('note')}")
+                    is_manipulated = True
 
         raw_inds = tampering.get("indicators", [])
         for ind in raw_inds:
             ind_str = str(ind).lower()
-            if any(k in ind_str for k in ["font", "text", "digit", "birth", "dob", "letter", "character", "baseline"]):
-                indicators.append(f"Text anomaly detected: {ind}")
-                is_manipulated = True
+            if any(k in ind_str for k in ["text manipulation", "altered date", "modified date", "font inconsistency", "character baseline distortion", "digital text insertion"]):
+                if not any(neg in ind_str for neg in ["no ", "not ", "none", "uniform", "passed"]):
+                    indicators.append(f"Text anomaly detected: {ind}")
+                    is_manipulated = True
 
-        if any(k in explanation for k in ["text manipulation", "altered date", "modified date", "font inconsistency", "different typeface"]):
-            is_manipulated = True
-            indicators.append("Optical character rendering indicates localized text insertion or character modification.")
+        if any(k in explanation for k in ["text manipulation", "altered date", "modified date", "font inconsistency", "character insertion"]):
+            if not any(neg in explanation for neg in ["no text", "no obvious", "passed", "uniform", "no tampering"]):
+                is_manipulated = True
+                indicators.append("Optical character rendering indicates localized text insertion or character modification.")
 
     if not indicators:
         indicators.append("Glyph rendering, baseline alignment, and font micro-structures are uniform across all credential lines.")
@@ -213,7 +198,8 @@ def detect_photo_replacement(source_image_path: Optional[str] = None, gemini_dat
         face_inds = face_data.get("indicators", [])
         explanation = (face_data.get("explanation") or "")
 
-        if is_real is False or any(k in photo_st for k in ["fake", "tamper", "synthetic", "deepfake"]):
+        is_photo_clean = any(neg in photo_st for neg in ["real", "pass", "verified", "clean", "good", "no obvious", "authentic"])
+        if is_real is False or (not is_photo_clean and any(k in photo_st for k in ["fake photo", "tampered photo", "synthetic", "deepfake", "spliced"])):
             is_replaced = True
             indicators.append(f"Portrait replacement / deepfake detected: {photo_st.upper()}")
             for ind in face_inds:

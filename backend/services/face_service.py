@@ -891,61 +891,61 @@ def analyze_photo_authenticity(
             "explanation": "Potential photo replacement or re-lamination detected." if g_rep else "Substrate layers under photograph align naturally with card base."
         }
 
-        is_editing = g_edit or (ela_mean > 12.0 and ela_std > 9.0)
+        is_editing = g_edit or (ela_mean > 24.0 and ela_std > 16.0)
         check_editing = {
             "detected": is_editing,
             "status": "Warning" if is_editing else "Pass",
             "explanation": "Localized pixel retouching or contrast adjustment detected." if is_editing else "Lighting, tone gradients, and luminance falloff are uniform across portrait."
         }
 
-        is_cp = g_cp or (edge_mag > 85.0 and ela_std > 11.0)
+        is_cp = g_cp or (edge_mag > 160.0 and ela_std > 18.0)
         check_cp = {
             "detected": is_cp,
             "status": "Warning" if is_cp else "Pass",
             "explanation": "Digital splicing, halo, or boundary clipping detected." if is_cp else "No digital cut/paste or halo artifacts observed around portrait."
         }
 
-        is_boundary = g_bound or (edge_mag > 90.0)
+        is_boundary = g_bound or (edge_mag > 180.0 and ela_mean > 20.0)
         check_boundary = {
             "detected": is_boundary,
             "status": "Warning" if is_boundary else "Pass",
             "explanation": "Unusual boundary step change or discontinuous cut lines observed." if is_boundary else "Portrait boundaries blend smoothly into the underlying document structure."
         }
 
-        is_comp_inconsistent = g_comp or (ela_mean > 14.0)
+        is_comp_inconsistent = g_comp or (ela_mean > 25.0)
         check_compression = {
             "detected": is_comp_inconsistent,
             "status": "Warning" if is_comp_inconsistent else "Pass",
             "explanation": f"Disparate compression quantization detected (ELA index: {round(ela_mean, 1)})." if is_comp_inconsistent else f"Compression artifacts consistent across card substrate (ELA index: {round(ela_mean, 1)})."
         }
 
-        is_synthetic = g_synth or (skin_ratio < 0.05 and blur_var > 100.0)
+        is_synthetic = g_synth or (skin_ratio < 0.02 and blur_var > 200.0)
         check_synthetic = {
             "detected": is_synthetic,
             "status": "Warning" if is_synthetic else "Pass",
             "explanation": "Synthetic or generative face generation artifacts detected." if is_synthetic else "Facial skin microtexture, natural pore noise, and optical reflections verified."
         }
 
-        base_risk = 14.0 + float((h_c * w_c) % 5)
+        base_risk = 8.0 + float((h_c * w_c) % 4)
         risk = base_risk
 
-        if blur_var < 30.0:
-            risk = max(risk, 42.0)
+        if blur_var < 20.0:
+            risk = max(risk, 35.0)
         
         if check_replacement["detected"]:
-            risk += 28.0
+            risk += 35.0
         if check_editing["detected"]:
-            risk += 18.0
+            risk += 20.0
         if check_cp["detected"]:
-            risk += 24.0
+            risk += 25.0
         if check_boundary["detected"]:
             risk += 20.0
         if check_compression["detected"]:
-            risk += 16.0
+            risk += 15.0
         if check_synthetic["detected"]:
-            risk += 30.0
+            risk += 35.0
 
-        risk = round(min(98.5, max(8.0, risk)), 1)
+        risk = round(min(98.5, max(5.0, risk)), 1)
 
         if risk < 30.0:
             assessment = "LIKELY ORIGINAL"

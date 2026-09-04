@@ -560,7 +560,8 @@ FORENSIC EXAMINATION REQUIREMENTS:
    - Determine if the photo is a "Real Photo" or "Fake / Tampered Photo".
    - In 'explanation', explain clearly WHY the photo is real or fake (e.g. natural lighting, skin micro-texture, absence of digital splicing boundaries).
 4. TAMPERING & DIGITAL MANIPULATION:
-   - Inspect for altered text, photo replacement, white redaction boxes, or digital anomalies.
+   - Inspect for genuine physical or digital alterations: spliced headshots, overwritten numbers, altered DOB characters, font baseline shifts.
+   - NOTE: Standard official credential layout features (such as UIDAI instruction / disclaimer outline boxes, address boundary frames, barcode outlines, QR code boxes, and official card guidelines) are NORMAL authentic document layout elements and MUST NOT be classified as tampering, masks, or anomalies.
 5. FIELD EXTRACTION:
    - Extract Full Name, Document Number, Date of Birth, Gender, Address, Expiry Date.
 

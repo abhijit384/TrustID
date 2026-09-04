@@ -558,13 +558,11 @@ def analyze_screening(
             raw_photo_st = str(gemini_face.get("photo_status") or gemini_face.get("status") or "").lower()
             gemini_is_real = gemini_face.get("is_real_photo")
 
+            is_photo_clean = any(pos in raw_photo_st for pos in ["no obvious", "real", "pass", "verified", "clean", "good", "authentic", "normal"])
             is_anomaly = (
                 gemini_is_real is False or
-                "fake" in raw_photo_st or
-                "tamper" in raw_photo_st or
-                "anomaly" in raw_photo_st or
-                "splic" in raw_photo_st or
-                photo_risk >= 70.0
+                (not is_photo_clean and any(k in raw_photo_st for k in ["fake photo", "tamper", "deepfake", "splic", "synthetic"])) or
+                photo_risk >= 85.0
             )
 
             if not doc_face_detected:
