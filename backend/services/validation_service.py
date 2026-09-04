@@ -192,11 +192,14 @@ def validate_document_rules(fields_dict: Dict[str, str], gemini_data: Optional[D
         })
 
     # 6. Specimen / Sample Template & Placeholder Check (using regex word boundaries)
+    # Only search actual document text (OCR output and extracted field values),
+    # never AI-generated explanations which may use "sample" in normal sentences.
     ocr_raw = str(gemini_data.get("raw_ocr_text", "")).upper() if gemini_data else ""
-    # Only search document text, name, doc number, and explicit specimen phrases (avoid loose matching in general AI explanations)
     doc_text_to_check = f"{name_upper} {clean_doc_no} {ocr_raw}"
     
-    specimen_pattern = r'\b(SPECIMEN|SAMPLE|SAMPLE\s+ONLY|DEMO|NOT\s+VALID|FOR\s+DEMONSTRATION|MOCK|TRAINING|VOID|CONNOR\s+SAMPLE|JOHN\s+DOE|JANE\s+DOE|N99999999)\b'
+    # Note: "DEMO" alone is excluded — too ambiguous (appears in "DEMOGRAPHIC").
+    # "FOR DEMONSTRATION" and "DEMO DOCUMENT" are still caught.
+    specimen_pattern = r'\b(SPECIMEN|SAMPLE|SAMPLE\s+ONLY|NOT\s+VALID|FOR\s+DEMONSTRATION|DEMO\s+DOCUMENT|MOCK|TRAINING\s+DOCUMENT|VOID|CONNOR\s+SAMPLE|JOHN\s+DOE|JANE\s+DOE|N99999999)\b'
     is_sample_specimen = bool(re.search(specimen_pattern, doc_text_to_check, re.IGNORECASE))
     
     if is_sample_specimen:

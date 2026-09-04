@@ -430,10 +430,29 @@ def analyze_screening(
             except Exception as norm_err:
                 logger.warning(f"[ANALYSIS] Orientation normalization note: {norm_err}")
 
-            # 1. Extract preliminary OCR text
-            initial_ocr = extract_document_ocr(doc_path)
-            ocr_candidate_text = initial_ocr.get("raw_text", "")
-            print(f"[OCR] OCR COMPLETED")
+            # 1. Extract preliminary OCR raw text (lightweight — no field reconciliation yet)
+            from backend.services.ocr_service import get_paddle_engine, preprocess_image_for_ocr
+            ocr_candidate_text = ""
+            paddle = get_paddle_engine()
+            if paddle:
+                try:
+                    results = paddle.ocr(doc_path, cls=True)
+                    if results and len(results) > 0 and results[0]:
+                        lines_extracted = [line[1][0] for line in results[0] if len(line) > 1 and len(line[1]) > 0]
+                        ocr_candidate_text = "\n".join(lines_extracted)
+                except Exception as e:
+                    logger.warning(f"[OCR] PaddleOCR preliminary text error: {e}")
+            # Check companion text files (PDF digital text)
+            txt_companion = f"{doc_path}.txt"
+            if os.path.exists(txt_companion):
+                try:
+                    with open(txt_companion, "r", encoding="utf-8") as tf:
+                        c_text = tf.read().strip()
+                        if c_text:
+                            ocr_candidate_text = c_text + ("\n" + ocr_candidate_text if ocr_candidate_text else "")
+                except Exception:
+                    pass
+            print(f"[OCR] OCR COMPLETED ({len(ocr_candidate_text)} chars)")
 
             # 2. Execute Gemini 3.5 Flash multimodal vision analysis
             try:
@@ -464,7 +483,7 @@ def analyze_screening(
             db.query(AIAnalysis).filter(AIAnalysis.screening_id == screening.id).delete()
             db.commit()
 
-            # Reconcile OCR candidate fields with Gemini visual verification
+            # 4. Full OCR reconciliation with Gemini data (single call, reusing cached raw text)
             ocr_result = extract_document_ocr(doc_path, gemini_data=gemini_res, cached_raw_text=ocr_candidate_text)
         for field in ocr_result.get("fields", []):
             db.add(ExtractedField(

@@ -407,16 +407,26 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
     gem_class = str(auth_gemini.get("classification", "")).lower().strip()
     gem_is_real = auth_gemini.get("is_real_document")
 
-    # Check for Specimen / Sample markers
-    raw_ocr_str = str(data.get("raw_ocr_text", "")).lower()
-    fields_str = str(data.get("extracted_fields", {})).lower()
-    reasons_combined = " ".join([str(r).lower() for r in (reasons + auth_gemini.get("reasons", []))])
-    expl_str = str(data.get("explanation", "")).lower()
-
-    is_specimen_sample = any(
-        kw in raw_ocr_str or kw in fields_str or kw in reasons_combined or kw in expl_str
-        for kw in ["sample", "specimen", "sample card", "specimen card", "sample template", "demonstration template", "connor sample", "john doe", "n99999999", "void"]
+    # Check for Specimen / Sample markers — EVIDENCE-BASED only
+    # Only search in actual document text (OCR output and extracted field values).
+    # Do NOT search in AI-generated explanations or reasons, which often contain
+    # words like "sample" in normal forensic narrative (e.g. "a sample of standard typography").
+    raw_ocr_str = str(data.get("raw_ocr_text", "")).upper()
+    # Build a string from only the extracted field *values*, not AI narrative
+    extracted_fields = data.get("extracted_fields", {})
+    field_values_str = " ".join(
+        str(v).upper() for v in extracted_fields.values()
+        if v and str(v).lower() not in ["null", "none", "not detected", ""]
     )
+    document_text_to_check = f"{raw_ocr_str} {field_values_str}"
+
+    specimen_pattern = re.compile(
+        r'\b(SPECIMEN|SAMPLE|SAMPLE\s+ONLY|NOT\s+VALID|FOR\s+DEMONSTRATION|'
+        r'MOCK|TRAINING\s+DOCUMENT|VOID|CONNOR\s+SAMPLE|JOHN\s+DOE|JANE\s+DOE|N99999999)\b',
+        re.IGNORECASE
+    )
+    is_specimen_sample = bool(specimen_pattern.search(document_text_to_check))
+
 
     is_tampered_flag = (
         has_tampering or
