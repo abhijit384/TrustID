@@ -81,6 +81,20 @@ def get_screenings(
     screenings = query.limit(100).all()
     results = []
     for s in screenings:
+        raw_auth = (s.authenticity_classification or "").upper()
+        if "INVALID" in raw_auth:
+            overall_st = "INVALID DOCUMENT"
+            auth_res = "INVALID DOCUMENT"
+        elif "FAKE" in raw_auth or "TAMPER" in raw_auth or "SUSPICIOUS" in raw_auth or (s.risk_score >= 50 and "INCONCLUSIVE" not in raw_auth):
+            overall_st = "FAKE DOCUMENT"
+            auth_res = "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
+        elif "INCONCLUSIVE" in raw_auth:
+            overall_st = "INCONCLUSIVE"
+            auth_res = "INCONCLUSIVE"
+        else:
+            overall_st = "REAL DOCUMENT"
+            auth_res = "LIKELY GENUINE"
+
         results.append({
             "id": s.id,
             "screening_id": s.screening_id,
@@ -91,7 +105,12 @@ def get_screenings(
             "demo_person_name": s.demo_person_name,
             "created_at": s.created_at,
             "officer_name": s.creator.name if s.creator else "Authorized Officer",
-            "document_hash": s.document_hash
+            "document_hash": s.document_hash,
+            "overall_document_status": overall_st,
+            "document_status": overall_st,
+            "authenticity_classification": overall_st,
+            "authenticity_result": auth_res,
+            "authenticity_confidence": s.authenticity_confidence
         })
     return results
 
@@ -734,7 +753,14 @@ def analyze_screening(
         is_poor_quality = (doc_quality.get("status") or "").capitalize() == "Poor"
         detected_fields_cnt = len([f for f in ocr_result.get("fields", []) if f.get("field_value_demo") != "Not detected"])
         
+        is_invalid_structure = (
+            (detected_fields_cnt == 0 and not doc_face_detected and not any(c.get("status") == "Passed" for c in val_result.get("checks", []))) or
+            is_sample_specimen or
+            ("invalid" in initial_auth_str and not has_tampering_evidence)
+        )
+
         is_true_inconclusive = (
+            not is_invalid_structure and
             not has_tampering_evidence and (
                 ("inconclusive" in initial_auth_str and not any(k in initial_auth_str for k in ["real", "fake", "tamper", "sample"])) or
                 (is_poor_quality and detected_fields_cnt < 3) or
@@ -743,8 +769,27 @@ def analyze_screening(
         )
 
         auth_conf = None
-        if has_tampering_evidence:
-            auth_classification = "Tampered Document" if ("tamper" in initial_auth_str or has_gemini_tampering) else "Fake Document"
+        if is_invalid_structure:
+            overall_document_status = "INVALID DOCUMENT"
+            auth_result = "INVALID DOCUMENT"
+            score = 50.0
+            level = "Medium"
+            border_decision = "REJECT / INVALID CREDENTIAL"
+            border_decision_badge = "medium"
+            auth_conf = None
+            if is_sample_specimen:
+                auth_reasons = [
+                    "Invalid Credential: Document is an unissued specimen/sample template marked with 'SAMPLE' or placeholder demonstration data.",
+                    "Demonstration and training exemplar cards cannot be accepted as valid identity credentials."
+                ]
+            else:
+                auth_reasons = [
+                    "The submitted file/document does not meet the supported identity document structural requirements or contains unparseable formatting."
+                ]
+            supporting_assessment = "The submitted document fails fundamental identity credential structural validation."
+        elif has_tampering_evidence:
+            overall_document_status = "FAKE DOCUMENT"
+            auth_result = "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
             score = max(score, 75.0 if not (is_blacklisted_doc or is_sample_specimen) else 90.0)
             level = "High"
             border_decision = "DETAIN / ENFORCEMENT ACTION"
@@ -752,11 +797,6 @@ def analyze_screening(
             auth_conf = float(max(0.88, float(auth_info.get("confidence", 0.94))))
             if is_blacklisted_doc:
                 auth_reasons = ["Document or subject recorded in Interpol SLTD / Watchlist. Immediate detention protocol required."]
-            elif is_sample_specimen:
-                auth_reasons = [
-                    "Invalid Credential: Document is an unissued specimen/sample template marked with 'SAMPLE' or placeholder demonstration data.",
-                    "Demonstration and training exemplar cards cannot be accepted as valid identity credentials."
-                ]
             elif is_dob_fraud:
                 auth_reasons = ["Biographical anomaly: Chronological date of birth fraud detected."]
             elif multiple_faces_in_portrait:
@@ -768,8 +808,10 @@ def analyze_screening(
                 auth_reasons = gem_tamp_inds if gem_tamp_inds else ["Observable physical or digital tampering detected across document credential substrate."]
             else:
                 auth_reasons = auth_info.get("reasons") or ["Credential exhibits physical, digital, or AI-generated tampering inconsistencies."]
+            supporting_assessment = "Strong evidence supporting fabrication, tampering, or counterfeit document structure."
         elif is_true_inconclusive:
-            auth_classification = "Inconclusive"
+            overall_document_status = "INCONCLUSIVE"
+            auth_result = "INCONCLUSIVE"
             score = max(35.0, min(45.0, score if score > 0 else 38.0))
             level = "Medium"
             border_decision = "REFER TO SECONDARY INSPECTION / MANUAL REVIEW"
@@ -782,8 +824,10 @@ def analyze_screening(
                 auth_reasons = [f"Inconclusive — Optical character reading and visual verification produced conflicting values for {conflict_names} without verifiable security parity to resolve."]
             else:
                 auth_reasons = auth_info.get("reasons") or ["Inconclusive — Visual and optical evidence is insufficient to make a definitive authenticity determination."]
+            supporting_assessment = "Available evidence is insufficient for a reliable authenticity decision."
         else:
-            auth_classification = "Real Document"
+            overall_document_status = "REAL DOCUMENT"
+            auth_result = "LIKELY GENUINE"
             score = min(score, 18.0) if not is_expired_doc else max(25.0, score)
             level = "Low" if score < 30.0 else "Medium"
             border_decision = "ALLOW ENTRY / STANDARD CLEARANCE" if not is_expired_doc else "REVIEW / EXPIRED DOCUMENT"
@@ -795,10 +839,11 @@ def analyze_screening(
             ]
             if is_expired_doc:
                 auth_reasons.append("Notice: Document validity period has expired; requires routine re-issuance.")
+            supporting_assessment = "Likely genuine based on the available document, OCR, structural, visual, and forensic evidence."
 
         screening.risk_score = score
         screening.risk_level = level
-        screening.authenticity_classification = auth_classification
+        screening.authenticity_classification = overall_document_status
         screening.authenticity_confidence = auth_conf
         screening.authenticity_reasons = auth_reasons
 
@@ -810,7 +855,7 @@ def analyze_screening(
         portrait_analysis_val = doc_face_st if doc_face_detected else "No Portrait on Credential"
         face_analysis_val = f"{primary_portrait_face_count} Face(s) Detected" if doc_face_detected else "No Face Detected"
         critical_conflicts_val = f"{len(critical_conflicts)} Unresolved" if len(critical_conflicts) > 0 else "None"
-        evidence_sufficiency_val = "Insufficient" if is_true_inconclusive else "Sufficient"
+        evidence_sufficiency_val = "Insufficient" if is_true_inconclusive else ("Invalid Structure" if is_invalid_structure else "Sufficient")
 
         decision_trace = {
             "ocr_quality": ocr_quality_val,
@@ -821,7 +866,9 @@ def analyze_screening(
             "face_analysis": face_analysis_val,
             "critical_conflicts": critical_conflicts_val,
             "evidence_sufficiency": evidence_sufficiency_val,
-            "final_result": auth_classification,
+            "final_result": overall_document_status,
+            "authenticity_result": auth_result,
+            "supporting_assessment": supporting_assessment,
             "primary_reason": auth_reasons[0] if auth_reasons else "Comprehensive evaluation completed."
         }
 
@@ -958,6 +1005,24 @@ def get_screening_detail(
     d_count = screening.document_wide_face_count if screening.document_wide_face_count is not None else (screening.faces_detected_count or (1 if is_face_detected else 0))
     o_count = screening.other_faces_count if screening.other_faces_count is not None else max(0, d_count - p_count)
 
+    raw_auth = (screening.authenticity_classification or "").upper()
+    if "INVALID" in raw_auth:
+        overall_status = "INVALID DOCUMENT"
+        auth_result = "INVALID DOCUMENT"
+        supporting_assess = "The submitted document fails fundamental identity credential structural validation."
+    elif "FAKE" in raw_auth or "TAMPER" in raw_auth or "SUSPICIOUS" in raw_auth or (screening.risk_score >= 50 and "INCONCLUSIVE" not in raw_auth):
+        overall_status = "FAKE DOCUMENT"
+        auth_result = "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
+        supporting_assess = "Strong evidence supporting fabrication, tampering, or counterfeit document structure."
+    elif "INCONCLUSIVE" in raw_auth:
+        overall_status = "INCONCLUSIVE"
+        auth_result = "INCONCLUSIVE"
+        supporting_assess = "Available evidence is insufficient for a reliable authenticity decision."
+    else:
+        overall_status = "REAL DOCUMENT"
+        auth_result = "LIKELY GENUINE"
+        supporting_assess = "Likely genuine based on the available document, OCR, structural, visual, and forensic evidence."
+
     return {
         "id": screening.id,
         "screening_id": screening.screening_id,
@@ -979,9 +1044,13 @@ def get_screening_detail(
         "officer_name": officer_name,
         "analysis_started_at": screening.analysis_started_at,
         "analysis_completed_at": screening.analysis_completed_at,
-        "authenticity_classification": screening.authenticity_classification or ("Fake Document" if screening.risk_score >= 50 else "Real Document"),
-        "authenticity_confidence": screening.authenticity_confidence if screening.authenticity_confidence is not None else (None if (screening.authenticity_classification or "").lower() == "inconclusive" else 0.95),
-        "authenticity_reasons": screening.authenticity_reasons or (["Potential visual anomaly detected."] if screening.risk_score >= 50 else ["Official security features and layout conform to authentic document standards."]),
+        "overall_document_status": overall_status,
+        "document_status": overall_status,
+        "authenticity_classification": overall_status,
+        "authenticity_result": auth_result,
+        "supporting_assessment": supporting_assess,
+        "authenticity_confidence": screening.authenticity_confidence if screening.authenticity_confidence is not None else (None if overall_status in ["INCONCLUSIVE", "INVALID DOCUMENT"] else 0.95),
+        "authenticity_reasons": screening.authenticity_reasons or ([supporting_assess]),
         "photo_forensics_status": (screening.photo_forensics_status or "Real Photo") if is_face_detected else "No Face Detected",
         "photo_forensics_score": screening.photo_forensics_score or 0.0,
         "photo_forensics_explanation": (screening.photo_forensics_explanation or "Embedded document portrait verified authentic.") if is_face_detected else "No facial photograph detected in the uploaded document.",

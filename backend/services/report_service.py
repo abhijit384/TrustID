@@ -104,7 +104,10 @@ def generate_pdf_report(screening_data: dict) -> bytes:
     risk_color = "#10b981" if risk_level == "LOW" else ("#f59e0b" if risk_level == "MEDIUM" else "#ef4444")
 
     auth_class_raw = str(screening_data.get("authenticity_classification") or "Real Document").upper()
-    if "GENUINE" in auth_class_raw or "REAL" in auth_class_raw:
+    if "INVALID" in auth_class_raw:
+        auth_badge_text = "INVALID DOCUMENT"
+        auth_badge_color = "#9333ea"
+    elif "GENUINE" in auth_class_raw or "REAL" in auth_class_raw:
         auth_badge_text = "REAL DOCUMENT"
         auth_badge_color = "#059669"
     elif "FAKE" in auth_class_raw or "SUSPICIOUS" in auth_class_raw:

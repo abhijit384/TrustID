@@ -292,23 +292,44 @@ export const Analysis = () => {
   const tampModules = borderCheckpoint.module3_tampering?.modules || {};
   const multiIdCheck = borderCheckpoint.module4_face_verification?.multiple_identities_check || {};
 
-  // Authenticity Assessment resolution: Likely Genuine vs Potentially Suspicious vs Inconclusive
-  const authClass = screening.authenticity_classification || findings.authenticity_assessment?.classification || (screening.risk_score >= 50 ? "Fake Document" : "Real Document");
-  const authConf = screening.authenticity_confidence !== null && screening.authenticity_confidence !== undefined
-    ? Math.round(screening.authenticity_confidence * 100)
-    : (findings.authenticity_assessment?.confidence ? Math.round(findings.authenticity_assessment.confidence * 100) : null);
-  const authReasons = screening.authenticity_reasons || findings.authenticity_assessment?.reasons || [];
-  const decisionTrace = explain.decision_trace || findings.decision_trace || {};
+  // Canonical Overall Document Status resolution
+  const rawStatus = (screening.overall_document_status || screening.document_status || screening.authenticity_classification || findings.authenticity_assessment?.classification || "").toUpperCase();
 
-  const isLikelyGenuine = authClass.toLowerCase().includes("genuine") || authClass.toLowerCase().includes("real");
-  const isSuspicious = authClass.toLowerCase().includes("potentially") || authClass.toLowerCase().includes("suspicious") || authClass.toLowerCase().includes("fake") || authClass.toLowerCase().includes("tamper");
-  const isInconclusive = authClass.toLowerCase().includes("inconclusive") || (!isLikelyGenuine && !isSuspicious);
+  const isInvalidDoc = rawStatus.includes("INVALID");
+  const isFakeDoc = !isInvalidDoc && (rawStatus.includes("FAKE") || rawStatus.includes("TAMPER") || rawStatus.includes("SUSPICIOUS") || (screening.risk_score >= 50 && !rawStatus.includes("INCONCLUSIVE")));
+  const isInconclusiveDoc = !isInvalidDoc && !isFakeDoc && (rawStatus.includes("INCONCLUSIVE") || (screening.risk_score >= 30 && screening.risk_score < 50 && authConf === null));
+  const isRealDoc = !isInvalidDoc && !isFakeDoc && !isInconclusiveDoc;
 
-  const displayAuthClass = isLikelyGenuine
-    ? "LIKELY GENUINE"
-    : isSuspicious
+  const overallDocumentStatus = isInvalidDoc
+    ? "INVALID DOCUMENT"
+    : isFakeDoc
+      ? "FAKE DOCUMENT"
+      : isInconclusiveDoc
+        ? "INCONCLUSIVE"
+        : "REAL DOCUMENT";
+
+  const internalAuthResult = isInvalidDoc
+    ? "INVALID DOCUMENT"
+    : isFakeDoc
       ? "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
-      : "INCONCLUSIVE";
+      : isInconclusiveDoc
+        ? "INCONCLUSIVE"
+        : "LIKELY GENUINE";
+
+  const isLikelyGenuine = isRealDoc;
+  const isSuspicious = isFakeDoc;
+  const isInconclusive = isInconclusiveDoc;
+  const displayAuthClass = overallDocumentStatus;
+
+  const supportingAssessmentText = screening.supporting_assessment || (
+    isInvalidDoc
+      ? "The submitted file/document does not meet the supported document requirements or failed basic identity document structural validation."
+      : isFakeDoc
+        ? "Strong evidence supporting fabrication, tampering, counterfeit structure, or manipulated content."
+        : isInconclusiveDoc
+          ? "Available evidence is insufficient for a reliable authenticity decision."
+          : "Likely genuine based on the available document, OCR, structural, visual, and forensic evidence."
+  );
 
   // Document Face Analysis (Always evaluated on ID's embedded face)
   const faceDetected = screening.face_detected !== undefined ? Boolean(screening.face_detected) : Boolean(findings.face_analysis?.face_detected);
@@ -420,14 +441,16 @@ export const Analysis = () => {
                 <span>{isScreeningCompleted ? "AI AUTHENTICITY ASSESSMENT" : "DOCUMENT ANALYSIS IN PROGRESS"}</span>
                 {isScreeningCompleted ? (
                   <span className={`px-3 py-0.5 rounded-full text-xs font-mono font-bold border ${
-                    isLikelyGenuine
+                    isRealDoc
                       ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                      : isSuspicious
+                      : isFakeDoc
                         ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
-                        : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                        : isInvalidDoc
+                          ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                          : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
                   }`}>
-                    {isLikelyGenuine ? '🟢 ' : isSuspicious ? '🔴 ' : '🟠 '}
-                    {displayAuthClass}
+                    {isRealDoc ? '🟢 ' : isFakeDoc ? '🔴 ' : isInvalidDoc ? '🟣 ' : '🟠 '}
+                    {overallDocumentStatus}
                   </span>
                 ) : analyzingAi ? (
                   <span className="px-3 py-0.5 rounded-full text-xs font-mono font-bold border bg-cyan-500/10 text-cyan-300 border-cyan-500/30 flex items-center gap-1.5 animate-pulse">
@@ -735,63 +758,76 @@ export const Analysis = () => {
             </div>
           </div>
 
-          {/* PRIMARY: AI AUTHENTICITY ASSESSMENT CARD */}
-          <div className={`p-6 rounded-2xl border ${
-            isLikelyGenuine
-              ? 'border-emerald-500/40 bg-gradient-to-br from-emerald-950/20 via-slate-900 to-slate-900 shadow-glow-emerald'
-              : isSuspicious
-                ? 'border-rose-500/40 bg-gradient-to-br from-rose-950/20 via-slate-900 to-slate-900 shadow-glow-rose'
-                : 'border-amber-500/40 bg-gradient-to-br from-amber-950/20 via-slate-900 to-slate-900'
+          {/* 1. OVERALL DOCUMENT STATUS (CANONICAL CLASSIFICATION) */}
+          <div className={`p-6 sm:p-7 rounded-2xl border ${
+            isRealDoc
+              ? 'border-emerald-500/50 bg-gradient-to-br from-emerald-950/30 via-slate-900 to-slate-900 shadow-glow-emerald'
+              : isFakeDoc
+                ? 'border-rose-500/50 bg-gradient-to-br from-rose-950/30 via-slate-900 to-slate-900 shadow-glow-rose'
+                : isInvalidDoc
+                  ? 'border-purple-500/50 bg-gradient-to-br from-purple-950/30 via-slate-900 to-slate-900 shadow-glow-purple'
+                  : 'border-amber-500/50 bg-gradient-to-br from-amber-950/30 via-slate-900 to-slate-900'
           }`}>
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800/80">
               <div>
-                <span className="text-[11px] font-mono font-bold uppercase tracking-wider text-slate-400 block mb-1">
-                  Primary Classification
+                <span className="text-[11px] font-mono font-bold uppercase tracking-widest text-slate-400 block mb-1">
+                  OVERALL DOCUMENT STATUS
                 </span>
-                <h2 className="text-xl sm:text-2xl font-black tracking-tight text-white flex items-center gap-2.5">
-                  <span className="text-xl">
-                    {isLikelyGenuine ? '🟢' : isSuspicious ? '🔴' : '🟠'}
+                <h2 className="text-2xl sm:text-3xl font-black tracking-tight text-white flex items-center gap-3">
+                  <span className="text-2xl">
+                    {isRealDoc ? '🟢' : isFakeDoc ? '🔴' : isInvalidDoc ? '🟣' : '🟠'}
                   </span>
                   <span className={
-                    isLikelyGenuine ? 'text-emerald-300' : isSuspicious ? 'text-rose-300' : 'text-amber-300'
+                    isRealDoc ? 'text-emerald-300' : isFakeDoc ? 'text-rose-300' : isInvalidDoc ? 'text-purple-300' : 'text-amber-300'
                   }>
-                    {displayAuthClass}
+                    {overallDocumentStatus}
                   </span>
                 </h2>
+                <span className="text-[11px] font-mono text-slate-400 mt-1 block">
+                  Supporting internal evaluation: <strong className="text-slate-300">{internalAuthResult}</strong>
+                </span>
               </div>
 
-              <div className="bg-slate-950/80 px-4 py-2 rounded-xl border border-slate-800 self-start sm:self-auto text-right">
-                <span className="text-[10px] font-mono uppercase text-slate-400 block">Assessment Confidence</span>
-                <span className={`text-xl sm:text-2xl font-mono font-extrabold ${
-                  isLikelyGenuine ? 'text-emerald-400' : isSuspicious ? 'text-rose-400' : 'text-amber-400'
+              <div className="bg-slate-950/90 px-5 py-3 rounded-2xl border border-slate-800 self-start sm:self-auto text-right">
+                <span className="text-[10px] font-mono uppercase text-slate-400 block font-bold">
+                  {authConf !== null ? "Assessment Confidence" : "Decision Basis"}
+                </span>
+                <span className={`text-2xl sm:text-3xl font-mono font-black ${
+                  isRealDoc ? 'text-emerald-400' : isFakeDoc ? 'text-rose-400' : isInvalidDoc ? 'text-purple-400' : 'text-amber-400'
                 }`}>
-                  {authConf !== null ? `${authConf}%` : 'Uncertain'}
+                  {authConf !== null ? `${authConf}%` : (isInvalidDoc ? 'Structural Check' : 'Inconclusive Evidence')}
                 </span>
               </div>
             </div>
 
-            {/* Evidence Summary */}
-            <div className="mt-4 space-y-2">
-              <span className="text-[11px] font-mono uppercase text-slate-400 font-bold block">
-                Evidence Summary:
-              </span>
-              <ul className="space-y-1.5 text-xs text-slate-200">
-                {authReasons.length > 0 ? (
-                  authReasons.map((r, i) => (
-                    <li key={i} className="flex items-start gap-2">
-                      <span className={isLikelyGenuine ? 'text-emerald-400' : 'text-amber-400 font-bold'}>
-                        {isLikelyGenuine ? '✓' : '⚠'}
-                      </span>
-                      <span>{r}</span>
-                    </li>
-                  ))
-                ) : (
-                  <li className="flex items-start gap-2">
-                    <span className="text-emerald-400">✓</span>
-                    <span>No significant verification anomalies detected in document substrate.</span>
-                  </li>
-                )}
-              </ul>
+            {/* Supporting Assessment & Primary Reasons */}
+            <div className="mt-4 space-y-3">
+              <div className="p-3.5 rounded-xl bg-slate-950/60 border border-slate-800/80 text-xs text-slate-200">
+                <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block mb-1">
+                  Supporting Assessment:
+                </span>
+                <p className="leading-relaxed">
+                  {supportingAssessmentText}
+                </p>
+              </div>
+
+              {authReasons.length > 0 && (
+                <div className="space-y-1.5">
+                  <span className="text-[10px] font-mono uppercase text-slate-400 font-bold block">
+                    {isFakeDoc ? "Primary Suspicious Reasons:" : "Verification Notes & Evidence:"}
+                  </span>
+                  <ul className="space-y-1.5 text-xs text-slate-200">
+                    {authReasons.map((r, i) => (
+                      <li key={i} className="flex items-start gap-2">
+                        <span className={isRealDoc ? 'text-emerald-400' : isFakeDoc ? 'text-rose-400 font-bold' : isInvalidDoc ? 'text-purple-400 font-bold' : 'text-amber-400 font-bold'}>
+                          {isRealDoc ? '✓' : '⚠'}
+                        </span>
+                        <span>{r}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
           </div>
 
@@ -1417,13 +1453,16 @@ export const Analysis = () => {
               <p className="text-xs text-slate-400 mt-0.5">Comprehensive synthesis of OCR, visual forensics, MRZ, and face integrity signals.</p>
             </div>
             <span className={`px-3 py-1 rounded-full text-xs font-mono font-bold border ${
-              isLikelyGenuine
+              isRealDoc
                 ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/30'
-                : isSuspicious
+                : isFakeDoc
                   ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
-                  : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
+                  : isInvalidDoc
+                    ? 'bg-purple-500/10 text-purple-300 border-purple-500/30'
+                    : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
             }`}>
-              {displayAuthClass}
+              {isRealDoc ? '🟢 ' : isFakeDoc ? '🔴 ' : isInvalidDoc ? '🟣 ' : '🟠 '}
+              {overallDocumentStatus}
             </span>
           </div>
 

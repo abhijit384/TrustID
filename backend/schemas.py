@@ -157,7 +157,10 @@ class ScreeningSummary(BaseModel):
     created_at: datetime
     officer_name: Optional[str] = None
     document_hash: Optional[str] = None
-    authenticity_classification: Optional[str] = "Likely Genuine"
+    overall_document_status: Optional[str] = "REAL DOCUMENT"
+    document_status: Optional[str] = "REAL DOCUMENT"
+    authenticity_classification: Optional[str] = "REAL DOCUMENT"
+    authenticity_result: Optional[str] = "LIKELY GENUINE"
     authenticity_confidence: Optional[float] = 0.91
 
     class Config:
@@ -186,7 +189,11 @@ class ScreeningDetail(BaseModel):
     analysis_completed_at: Optional[datetime] = None
 
     # Authenticity & Forensics
-    authenticity_classification: Optional[str] = "Likely Genuine"
+    overall_document_status: Optional[str] = "REAL DOCUMENT"
+    document_status: Optional[str] = "REAL DOCUMENT"
+    authenticity_classification: Optional[str] = "REAL DOCUMENT"
+    authenticity_result: Optional[str] = "LIKELY GENUINE"
+    supporting_assessment: Optional[str] = None
     authenticity_confidence: Optional[float] = 0.91
     authenticity_reasons: Optional[List[str]] = []
     photo_forensics_status: Optional[str] = "No Obvious Anomaly"

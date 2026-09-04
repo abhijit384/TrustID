@@ -42,7 +42,8 @@ async def run_tests_async():
         print(f"Photo status: {result.get('photo_forensics_status')}")
         print(f"Faces detected: {result.get('faces_detected_count')}, Multiple faces: {result.get('multiple_faces_detected')}")
 
-        assert result.get('authenticity_classification') in ["Fake Document", "Tampered Document"], f"Expected Fake/Tampered Document, got {result.get('authenticity_classification')}"
+        assert result.get('authenticity_classification') in ["FAKE DOCUMENT", "Fake Document", "Tampered Document"], f"Expected FAKE DOCUMENT, got {result.get('authenticity_classification')}"
+        assert result.get('overall_document_status') == "FAKE DOCUMENT", f"Expected FAKE DOCUMENT, got {result.get('overall_document_status')}"
         assert result.get('risk_score') >= 80, f"Expected risk >= 80, got {result.get('risk_score')}"
         print(">>> TEST 1 PASSED: Blacklisted document correctly detected and detained without error!")
 
@@ -59,6 +60,8 @@ async def run_tests_async():
         clean_id = clean_scr["screening_id"]
         clean_res = analyze_screening(screening_identifier=clean_id, db=db, current_user=user)
         print(f"Classification: {clean_res.get('authenticity_classification')}")
+        print(f"Overall Status: {clean_res.get('overall_document_status')}")
+        print(f"Authenticity Result: {clean_res.get('authenticity_result')}")
         print(f"Risk Score: {clean_res.get('risk_score')} ({clean_res.get('risk_level')})")
         print(f"Decision: {clean_res.get('explainability_data', {}).get('border_checkpoint', {}).get('decision')}")
         print(f"Photo status: {clean_res.get('photo_forensics_status')}")
@@ -66,7 +69,8 @@ async def run_tests_async():
         print("Tampering result:", clean_res.get('explainability_data', {}).get('border_checkpoint', {}).get('module3_tampering'))
         print("Authenticity reasons:", clean_res.get('authenticity_reasons'))
 
-        assert clean_res.get('authenticity_classification') == "Real Document", f"Expected Real Document, got {clean_res.get('authenticity_classification')}"
+        assert clean_res.get('authenticity_classification') in ["REAL DOCUMENT", "Real Document"], f"Expected REAL DOCUMENT, got {clean_res.get('authenticity_classification')}"
+        assert clean_res.get('overall_document_status') == "REAL DOCUMENT", f"Expected REAL DOCUMENT, got {clean_res.get('overall_document_status')}"
         assert clean_res.get('risk_score') <= 30, f"Expected low risk, got {clean_res.get('risk_score')}"
         print(">>> TEST 2 PASSED: Clean passport correctly verified as Real Document!")
 
