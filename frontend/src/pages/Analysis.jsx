@@ -303,8 +303,8 @@ export const Analysis = () => {
   const rawStatus = (screening.overall_document_status || screening.document_status || screening.authenticity_classification || findings.authenticity_assessment?.classification || "").toUpperCase();
 
   const isInvalidDoc = rawStatus.includes("INVALID");
-  const isFakeDoc = !isInvalidDoc && (rawStatus.includes("FAKE") || rawStatus.includes("TAMPER") || rawStatus.includes("SUSPICIOUS") || (screening.risk_score >= 50 && !rawStatus.includes("INCONCLUSIVE")));
-  const isInconclusiveDoc = !isInvalidDoc && !isFakeDoc && (rawStatus.includes("INCONCLUSIVE") || (screening.risk_score >= 30 && screening.risk_score < 50 && authConf === null));
+  const isFakeDoc = !isInvalidDoc && (rawStatus.includes("FAKE") || rawStatus.includes("TAMPER") || rawStatus.includes("SUSPICIOUS"));
+  const isInconclusiveDoc = !isInvalidDoc && !isFakeDoc && rawStatus.includes("INCONCLUSIVE");
   const isRealDoc = !isInvalidDoc && !isFakeDoc && !isInconclusiveDoc;
 
   const overallDocumentStatus = isInvalidDoc

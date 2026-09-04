@@ -446,7 +446,7 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
     )
 
     if is_specimen_sample:
-        final_risk = max(final_risk, 88.0)
+        final_risk = max(final_risk, 90.0)
         auth_class = "Fake Document"
         is_real = False
         auth_conf = 0.99
@@ -454,7 +454,8 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
             "Invalid Credential: Document is an unissued specimen/sample template marked with 'SAMPLE' or placeholder demonstration data.",
             "Demonstration and training exemplar cards cannot be accepted as valid identity documents."
         ]
-    elif is_tampered_flag or final_risk >= 50 or len(mismatches) > 1 or face_data.get("photo_status") == "Fake / Tampered Photo":
+    elif is_tampered_flag or len(mismatches) > 1 or face_data.get("photo_status") == "Fake / Tampered Photo":
+        final_risk = max(final_risk, 75.0)
         auth_class = "Tampered Document" if ("tamper" in gem_class or has_tampering) else "Fake Document"
         is_real = False
         auth_conf = max(0.90, float(auth_gemini.get("confidence", 0.92)))
@@ -469,6 +470,7 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
     else:
         auth_class = "Real Document"
         is_real = True
+        final_risk = min(final_risk, 20.0)
         auth_conf = float(auth_gemini.get("confidence", 0.96))
         auth_reasons = auth_gemini.get("reasons") or [
             "Official security features, logos, and emblems verified authentic.",

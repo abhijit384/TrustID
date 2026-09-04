@@ -86,7 +86,7 @@ def get_screenings(
         if "INVALID" in raw_auth:
             overall_st = "INVALID DOCUMENT"
             auth_res = "INVALID DOCUMENT"
-        elif "FAKE" in raw_auth or "TAMPER" in raw_auth or "SUSPICIOUS" in raw_auth or (s.risk_score >= 50 and "INCONCLUSIVE" not in raw_auth):
+        elif "FAKE" in raw_auth or "TAMPER" in raw_auth or "SUSPICIOUS" in raw_auth:
             overall_st = "FAKE DOCUMENT"
             auth_res = "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
         elif "INCONCLUSIVE" in raw_auth:
@@ -747,39 +747,17 @@ def analyze_screening(
                 bool(gem_tamp.get("stamp_forgery_detected"))
             )
 
-            # Count independent tampering evidence signals (require 2+ for FAKE, or 1 strong signal)
-            tampering_signals = 0
-            strong_tampering = False
-            if tamp_result.get("tampering_score", 0) >= 45.0:
-                tampering_signals += 1
-            if is_face_altered:
-                tampering_signals += 1
-            if multiple_faces_in_portrait:
-                tampering_signals += 1
-                strong_tampering = True  # Strong signal
-            if multi_id_check.get("multiple_identities_detected"):
-                tampering_signals += 1
-                strong_tampering = True  # Strong signal
-            if is_blacklisted_doc:
-                tampering_signals += 1
-                strong_tampering = True  # Strong signal
-            if is_dob_fraud:
-                tampering_signals += 1
-                strong_tampering = True  # Strong signal
-            if has_gemini_tampering:
-                tampering_signals += 1
-            if gemini_res.get("mrz_analysis", {}).get("status") == "Mismatch":
-                tampering_signals += 1
-                strong_tampering = True  # Strong signal
-            if explicit_fake_auth:
-                tampering_signals += 1
-
-            # FAKE requires: explicit Gemini classification + corroborating evidence, OR 1 strong signal, OR 2+ weak signals
-            has_tampering_evidence = (
-                strong_tampering or
-                (explicit_fake_auth and tampering_signals >= 2) or
-                tampering_signals >= 2 or
-                (score >= 75.0 and tampering_signals >= 1)
+            # Strong tampering & counterfeit signals
+            has_tampering_evidence = bool(
+                is_blacklisted_doc or
+                is_dob_fraud or
+                multiple_faces_in_portrait or
+                multi_id_check.get("multiple_identities_detected") or
+                gemini_res.get("mrz_analysis", {}).get("status") == "Mismatch" or
+                explicit_fake_auth or
+                has_gemini_tampering or
+                is_face_altered or
+                tamp_result.get("tampering_score", 0) >= 50.0
             )
 
             # Check for critical conflicts between OCR and visual inspection
@@ -896,6 +874,15 @@ def analyze_screening(
             screening.authenticity_classification = overall_document_status
             screening.authenticity_confidence = auth_conf
             screening.authenticity_reasons = auth_reasons
+
+            print(f"[CLASSIFICATION TRACE] {screening.screening_id}: "
+                  f"specimen={is_sample_specimen} "
+                  f"non_doc={is_non_document} "
+                  f"tampering={has_tampering_evidence} "
+                  f"face_detected={doc_face_detected} "
+                  f"gemini_fake={explicit_fake_auth} "
+                  f"inconclusive={is_true_inconclusive} "
+                  f"-> FINAL={overall_document_status} (Score={score}, Level={level})")
 
             # Structured Decision Trace for Auditing & Explainability
             ocr_quality_val = "Poor" if is_poor_quality else ("High" if detected_fields_cnt >= 5 else "Acceptable")
@@ -1073,7 +1060,7 @@ def get_screening_detail(
         overall_status = "INVALID DOCUMENT"
         auth_result = "INVALID DOCUMENT"
         supporting_assess = "The submitted document fails fundamental identity credential structural validation."
-    elif "FAKE" in raw_auth or "TAMPER" in raw_auth or "SUSPICIOUS" in raw_auth or (screening.risk_score >= 50 and "INCONCLUSIVE" not in raw_auth):
+    elif "FAKE" in raw_auth or "TAMPER" in raw_auth or "SUSPICIOUS" in raw_auth:
         overall_status = "FAKE DOCUMENT"
         auth_result = "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
         supporting_assess = "Strong evidence supporting fabrication, tampering, or counterfeit document structure."
