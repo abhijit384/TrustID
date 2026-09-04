@@ -877,7 +877,7 @@ def analyze_screening(
         portrait_analysis_val = doc_face_st if doc_face_detected else "No Portrait on Credential"
         face_analysis_val = f"{primary_portrait_face_count} Face(s) Detected" if doc_face_detected else "No Face Detected"
         critical_conflicts_val = f"{len(critical_conflicts)} Unresolved" if len(critical_conflicts) > 0 else "None"
-        evidence_sufficiency_val = "Insufficient" if is_true_inconclusive else ("Invalid Structure" if is_invalid_structure else "Sufficient")
+        evidence_sufficiency_val = "Insufficient" if is_true_inconclusive else ("Non-Document Input" if is_non_document else "Sufficient")
 
         decision_trace = {
             "ocr_quality": ocr_quality_val,
