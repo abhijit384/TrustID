@@ -5,6 +5,7 @@ import numpy as np
 import logging
 from typing import Dict, Any, List, Optional
 from PIL import Image
+from backend.services.memory_utils import log_memory, force_gc
 
 logger = logging.getLogger("trustid.ocr")
 logging.basicConfig(level=logging.INFO)
@@ -16,9 +17,11 @@ def get_paddle_engine():
     global _PADDLE_ENGINE
     if _PADDLE_ENGINE is None:
         try:
+            log_memory("before_ocr_model_init", "PaddleOCR")
             from paddleocr import PaddleOCR
             _PADDLE_ENGINE = PaddleOCR(use_angle_cls=True, lang='en', show_log=False)
             print("[OCR] PaddleOCR engine initialized successfully.")
+            log_memory("after_ocr_model_init", "PaddleOCR loaded")
         except Exception as e:
             _PADDLE_ENGINE = False
     return _PADDLE_ENGINE if _PADDLE_ENGINE is not False else None
@@ -252,6 +255,7 @@ def extract_document_ocr(
     """
     filename = os.path.basename(file_path) if file_path else "unknown"
     print(f"\n[OCR] OCR started: {filename}")
+    log_memory("before_ocr", filename)
 
     if not file_path or not os.path.exists(file_path):
         print(f"[OCR] OCR text detected: 0 characters")
@@ -457,6 +461,9 @@ def extract_document_ocr(
     # Calculate average confidence of detected fields
     detected_confs = [f["confidence"] for f in fields_list if f["field_value_demo"] != "Not detected"]
     avg_conf = round(sum(detected_confs) / len(detected_confs) * 100, 1) if detected_confs else 85.0
+
+    force_gc()
+    log_memory("after_ocr", f"fields={detected_count}")
 
     return {
         "engine": engine_name,

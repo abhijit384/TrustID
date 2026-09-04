@@ -2,6 +2,7 @@ import os
 import shutil
 import uuid
 import datetime
+import asyncio
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, status
 from sqlalchemy.orm import Session
@@ -15,11 +16,16 @@ from backend.services.ocr_service import extract_document_ocr
 from backend.services.validation_service import validate_document_rules, compare_mrz_consistency
 from backend.services.tampering_service import run_tampering_analysis
 from backend.services.face_service import detect_and_crop_document_face, compute_face_comparison_similarity, analyze_photo_authenticity, check_multiple_identities
+from backend.services.memory_utils import log_memory, force_gc
 
+import threading
 from pathlib import Path
 import logging
 
 logger = logging.getLogger("trustid.documents")
+
+# Global re-entrant lock to serialize memory-intensive analysis on 512MB RAM instances
+ANALYSIS_LOCK = threading.Lock()
 
 router = APIRouter(prefix="/api/screenings", tags=["Screenings & Documents"])
 
@@ -104,6 +110,7 @@ async def create_screening_upload(
     Receives file, calculates SHA-256, creates persistent database record, and commits immediately.
     """
     print(f"[UPLOAD] UPLOAD START")
+    log_memory("before_upload_processing")
 
     try:
         # 1. Generate unique screening ID (e.g. TR-2026-0001)
@@ -125,16 +132,36 @@ async def create_screening_upload(
             original_name = document.filename
             file_bytes = await document.read()
 
+            # Request size protection: Max 15MB for uploaded documents
+            if len(file_bytes) > 15 * 1024 * 1024:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail="File size exceeds 15MB limit. Please upload a standard identity document."
+                )
+
+            log_memory("after_file_read", f"name={original_name} size={len(file_bytes)/1024:.1f}KB")
+
             # Automatic PDF conversion: extract digital text and render page 0
             is_pdf = file_bytes.startswith(b"%PDF") or original_name.lower().endswith(".pdf")
             if is_pdf:
                 try:
                     import pypdfium2 as pdfium
                     pdf = pdfium.PdfDocument(file_bytes)
-                    
+                    total_pages = len(pdf)
+                    log_memory("pdf_loaded", f"pages={total_pages}")
+
+                    # Limit PDF page count to prevent memory exhaustion
+                    if total_pages > 10:
+                        pdf.close()
+                        del pdf
+                        raise HTTPException(
+                            status_code=status.HTTP_400_BAD_REQUEST,
+                            detail=f"PDF has {total_pages} pages, exceeding the 10-page limit for identity document screening."
+                        )
+
                     # Extract text sequentially
                     pdf_lines = []
-                    for p_idx in range(len(pdf)):
+                    for p_idx in range(min(total_pages, 3)):
                         try:
                             textpage = pdf[p_idx].get_textpage()
                             txt = textpage.get_text_range()
@@ -155,33 +182,36 @@ async def create_screening_upload(
                     with open(orig_pdf_path, "wb") as pf:
                         pf.write(file_bytes)
 
-                    if len(pdf) > 0:
-                        # Render page 0 directly at scale 1.8 (~150 DPI) for memory efficiency
-                        rendered = pdf[0].render(scale=1.8).to_pil()
-                        rendered.convert("RGB").save(doc_path, format="JPEG", quality=92)
+                    if total_pages > 0:
+                        # Render page 0 directly at scale 1.5 (~150 DPI) for memory efficiency
+                        rendered = pdf[0].render(scale=1.5).to_pil()
+                        rendered.convert("RGB").save(doc_path, format="JPEG", quality=90)
                         rendered.close()
                         del rendered
+                        log_memory("after_pdf_render", f"rendered page 1 of {total_pages}")
                         print(f"[CONVERT] Successfully rendered PDF '{original_name}' (page 1) to JPEG: {doc_path}")
                     else:
                         with open(doc_path, "wb") as f:
                             f.write(file_bytes)
                     pdf.close()
                     del pdf
+                except HTTPException:
+                    raise
                 except Exception as pdf_err:
                     print(f"[CONVERT] pypdfium2 conversion note: {pdf_err}")
                     with open(doc_path, "wb") as f:
                         f.write(file_bytes)
             else:
-                # Normalize EXIF orientation and clamp oversized camera images to max 1400px
+                # Normalize EXIF orientation and clamp oversized camera images to max 1200px
                 try:
                     import io
                     from PIL import Image, ImageOps
                     with Image.open(io.BytesIO(file_bytes)) as pil_img:
                         pil_img = ImageOps.exif_transpose(pil_img) or pil_img
-                        max_dim = 1400
+                        max_dim = 1200
                         if pil_img.width > max_dim or pil_img.height > max_dim:
                             pil_img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-                        pil_img.convert("RGB").save(doc_path, format="JPEG", quality=92)
+                        pil_img.convert("RGB").save(doc_path, format="JPEG", quality=90)
                 except Exception:
                     with open(doc_path, "wb") as f:
                         f.write(file_bytes)
@@ -340,69 +370,70 @@ def analyze_screening(
     started_at = datetime.datetime.utcnow()
 
     try:
-        # Clear previous analysis runs for retried screening
-        db.query(ExtractedField).filter(ExtractedField.screening_id == screening.id).delete()
-        db.query(ValidationResult).filter(ValidationResult.screening_id == screening.id).delete()
-        db.query(TamperingResult).filter(TamperingResult.screening_id == screening.id).delete()
-        db.query(FaceResult).filter(FaceResult.screening_id == screening.id).delete()
-        db.query(AIAnalysis).filter(AIAnalysis.screening_id == screening.id).delete()
-        db.commit()
+        with ANALYSIS_LOCK:
+            # Clear previous analysis runs for retried screening
+            db.query(ExtractedField).filter(ExtractedField.screening_id == screening.id).delete()
+            db.query(ValidationResult).filter(ValidationResult.screening_id == screening.id).delete()
+            db.query(TamperingResult).filter(TamperingResult.screening_id == screening.id).delete()
+            db.query(FaceResult).filter(FaceResult.screening_id == screening.id).delete()
+            db.query(AIAnalysis).filter(AIAnalysis.screening_id == screening.id).delete()
+            db.commit()
 
-        # Self-healing check: If the stored file is actually a PDF, render page 1 to JPEG
-        try:
-            with open(doc_path, "rb") as f_check:
-                header_bytes = f_check.read(16)
-            if header_bytes.startswith(b"%PDF"):
-                print(f"[CONVERT] Self-healing detected PDF document at {doc_path}. Converting to high-res JPEG...")
-                import pypdfium2 as pdfium
-                pdf = pdfium.PdfDocument(doc_path)
-                if len(pdf) > 0:
-                    rendered_page = pdf[0].render(scale=1.8).to_pil()
-                    rendered_page.convert("RGB").save(doc_path, format="JPEG", quality=92)
-                    rendered_page.close()
-                    del rendered_page
-                    print(f"[CONVERT] Self-healing successfully converted PDF to JPEG: {doc_path}")
-                pdf.close()
-                del pdf
-        except Exception as conv_err:
-            print(f"[CONVERT] Self-healing PDF conversion note: {conv_err}")
+            # Self-healing check: If the stored file is actually a PDF, render page 1 to JPEG
+            try:
+                with open(doc_path, "rb") as f_check:
+                    header_bytes = f_check.read(16)
+                if header_bytes.startswith(b"%PDF"):
+                    print(f"[CONVERT] Self-healing detected PDF document at {doc_path}. Converting to JPEG...")
+                    import pypdfium2 as pdfium
+                    pdf = pdfium.PdfDocument(doc_path)
+                    if len(pdf) > 0:
+                        rendered_page = pdf[0].render(scale=1.5).to_pil()
+                        rendered_page.convert("RGB").save(doc_path, format="JPEG", quality=90)
+                        rendered_page.close()
+                        del rendered_page
+                        print(f"[CONVERT] Self-healing successfully converted PDF to JPEG: {doc_path}")
+                    pdf.close()
+                    del pdf
+            except Exception as conv_err:
+                print(f"[CONVERT] Self-healing PDF conversion note: {conv_err}")
 
-        # 1. Extract preliminary OCR text
-        initial_ocr = extract_document_ocr(doc_path)
-        ocr_candidate_text = initial_ocr.get("raw_text", "")
-        print(f"[OCR] OCR COMPLETED")
+            # 1. Extract preliminary OCR text
+            initial_ocr = extract_document_ocr(doc_path)
+            ocr_candidate_text = initial_ocr.get("raw_text", "")
+            print(f"[OCR] OCR COMPLETED")
 
-        # 2. Execute Gemini 3.5 Flash multimodal vision analysis
-        try:
-            gemini_res = analyze_document_with_gemini(
-                document_path=doc_path,
-                ocr_context=f"{original_name}\n{ocr_candidate_text}"
-            )
-        except Exception as gemini_err:
-            gemini_res = generate_dynamic_cv_analysis(
-                document_path=doc_path,
-                ocr_context=f"{original_name}\n{ocr_candidate_text}",
-                error_note=str(gemini_err)
-            )
-            db.add(AuditLog(
-                user_id=current_user.id,
-                screening_id=screening.id,
-                action="Assistive CV Analysis Engaged",
-                details=f"Assistive CV fallback engaged: {str(gemini_err)[:150]}",
-                timestamp=datetime.datetime.utcnow()
-            ))
-        print(f"[GEMINI] GEMINI COMPLETED")
+            # 2. Execute Gemini 3.5 Flash multimodal vision analysis
+            try:
+                gemini_res = analyze_document_with_gemini(
+                    document_path=doc_path,
+                    ocr_context=f"{original_name}\n{ocr_candidate_text}"
+                )
+            except Exception as gemini_err:
+                gemini_res = generate_dynamic_cv_analysis(
+                    document_path=doc_path,
+                    ocr_context=f"{original_name}\n{ocr_candidate_text}",
+                    error_note=str(gemini_err)
+                )
+                db.add(AuditLog(
+                    user_id=current_user.id,
+                    screening_id=screening.id,
+                    action="Assistive CV Analysis Engaged",
+                    details=f"Assistive CV fallback engaged: {str(gemini_err)[:150]}",
+                    timestamp=datetime.datetime.utcnow()
+                ))
+            print(f"[GEMINI] GEMINI COMPLETED")
 
-        # 3. Clean up any existing sub-records on re-analysis to ensure idempotency and prevent duplicate records
-        db.query(ExtractedField).filter(ExtractedField.screening_id == screening.id).delete()
-        db.query(ValidationResult).filter(ValidationResult.screening_id == screening.id).delete()
-        db.query(TamperingResult).filter(TamperingResult.screening_id == screening.id).delete()
-        db.query(FaceResult).filter(FaceResult.screening_id == screening.id).delete()
-        db.query(AIAnalysis).filter(AIAnalysis.screening_id == screening.id).delete()
-        db.commit()
+            # 3. Clean up any existing sub-records on re-analysis to ensure idempotency and prevent duplicate records
+            db.query(ExtractedField).filter(ExtractedField.screening_id == screening.id).delete()
+            db.query(ValidationResult).filter(ValidationResult.screening_id == screening.id).delete()
+            db.query(TamperingResult).filter(TamperingResult.screening_id == screening.id).delete()
+            db.query(FaceResult).filter(FaceResult.screening_id == screening.id).delete()
+            db.query(AIAnalysis).filter(AIAnalysis.screening_id == screening.id).delete()
+            db.commit()
 
-        # Reconcile OCR candidate fields with Gemini visual verification
-        ocr_result = extract_document_ocr(doc_path, gemini_data=gemini_res, cached_raw_text=ocr_candidate_text)
+            # Reconcile OCR candidate fields with Gemini visual verification
+            ocr_result = extract_document_ocr(doc_path, gemini_data=gemini_res, cached_raw_text=ocr_candidate_text)
         for field in ocr_result.get("fields", []):
             db.add(ExtractedField(
                 screening_id=screening.id,
@@ -838,6 +869,7 @@ def analyze_screening(
             }
         }
 
+        log_memory("before_result_save", screening.screening_id)
         db.add(AuditLog(
             user_id=current_user.id,
             screening_id=screening.id,
@@ -848,6 +880,7 @@ def analyze_screening(
         db.commit()
         print(f"[DATABASE] RESULT SAVED")
         print(f"[ANALYSIS] ANALYSIS COMPLETED: {screening.screening_id}")
+        log_memory("after_result_save", screening.screening_id)
 
         return get_screening_detail(screening.screening_id, db, current_user)
 
@@ -858,8 +891,7 @@ def analyze_screening(
         db.commit()
         raise HTTPException(status_code=500, detail=f"Analysis processing error: {str(err)}")
     finally:
-        import gc
-        gc.collect()
+        force_gc()
 
 
 @router.get("/{screening_identifier}", response_model=ScreeningDetail)

@@ -5,6 +5,7 @@ from typing import Dict, Any, List, Optional
 from PIL import Image
 from google import genai
 from google.genai import types
+from backend.services.memory_utils import log_memory, force_gc
 
 logger = logging.getLogger("trustid.gemini")
 logging.basicConfig(level=logging.INFO)
@@ -493,6 +494,7 @@ def analyze_document_with_gemini(
 
     filename = os.path.basename(document_path)
     print(f"\n[GEMINI] Gemini analysis started: {filename}")
+    log_memory("before_gemini", filename)
 
     client = get_gemini_client()
     contents = []
@@ -667,6 +669,8 @@ Return strictly valid JSON with this structure:
         data["model_name"] = "Trust AI Neural Engine"
 
         print(f"[TRUST-AI] Trust AI analysis completed: Classification={eval_results['authenticity_classification']}, Risk={eval_results['risk_score']}%")
+        force_gc()
+        log_memory("after_gemini", f"class={eval_results['authenticity_classification']}")
         return data
 
     except Exception as e:

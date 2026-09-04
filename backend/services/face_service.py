@@ -5,6 +5,7 @@ from typing import Dict, Any, Optional, Tuple, List
 from PIL import Image
 import numpy as np
 import cv2
+from backend.services.memory_utils import log_memory, force_gc
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,7 @@ def _get_yunet_detector():
     global _yunet_detector_cache
     if _yunet_detector_cache is None and os.path.exists(YUNET_MODEL_PATH) and hasattr(cv2, "FaceDetectorYN"):
         try:
+            log_memory("before_face_model_init", "YuNet ONNX")
             _yunet_detector_cache = cv2.FaceDetectorYN.create(
                 YUNET_MODEL_PATH,
                 "",
@@ -29,6 +31,7 @@ def _get_yunet_detector():
                 top_k=100
             )
             logger.info(f"[FACE_SERVICE] Loaded YuNet face detector from {YUNET_MODEL_PATH}")
+            log_memory("after_face_model_init", "YuNet ONNX loaded")
         except Exception as ex:
             logger.warning(f"[FACE_SERVICE] Could not load YuNet ONNX model: {ex}")
     return _yunet_detector_cache
@@ -37,8 +40,10 @@ def _get_rfb_net():
     global _rfb_net_cache
     if _rfb_net_cache is None and os.path.exists(RFB_MODEL_PATH):
         try:
+            log_memory("before_face_model_init", "RFB-320 ONNX")
             _rfb_net_cache = cv2.dnn.readNetFromONNX(RFB_MODEL_PATH)
             logger.info(f"[FACE_SERVICE] Loaded RFB-320 face detector from {RFB_MODEL_PATH}")
+            log_memory("after_face_model_init", "RFB-320 ONNX loaded")
         except Exception as ex:
             logger.warning(f"[FACE_SERVICE] Could not load RFB-320 ONNX model: {ex}")
     return _rfb_net_cache
@@ -356,10 +361,15 @@ def detect_and_crop_document_face(
             "reason": "Document image file not accessible."
         }
 
+    log_memory("before_face_analysis", os.path.basename(doc_image_path))
     try:
-        pil_img = Image.open(doc_image_path).convert("RGB")
-        w_img, h_img = pil_img.size
-        img_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        with Image.open(doc_image_path) as pil_raw:
+            pil_img = pil_raw.convert("RGB")
+            w_img, h_img = pil_img.size
+            if max(w_img, h_img) > 1200:
+                pil_img.thumbnail((1200, 1200), Image.Resampling.LANCZOS)
+                w_img, h_img = pil_img.size
+            img_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
         logger.info(f"[FACE_ANALYSIS] Processing document: {os.path.basename(doc_image_path)} ({w_img}x{h_img}px)")
 
@@ -414,6 +424,7 @@ def detect_and_crop_document_face(
             if not cand_faces:
                 cand_enhanced = _enhance_contrast(cand_crop)
                 cand_faces = _detect_faces_yunet(cand_enhanced, score_thresh=0.25)
+                del cand_enhanced
             if not cand_faces:
                 cand_faces = _detect_faces_rfb(cand_crop, conf_thresh=0.65)
 
@@ -432,42 +443,31 @@ def detect_and_crop_document_face(
                 })
 
         # -------------------------------------------------------------
-        # PATH A: FULL-PAGE MULTI-SCALE DETECTION
+        # PATH A: FULL-PAGE SINGLE-SCALE DETECTION (NO MASSIVE MULTI-SCALE UPSCALE)
         # -------------------------------------------------------------
-        scales = [1.0, 1.5, 2.0, 0.75]
-        for scale in scales:
-            sw = int(w_img * scale)
-            sh = int(h_img * scale)
-            if sw < 80 or sh < 80 or sw > 4000 or sh > 4000:
+        full_faces = _detect_faces_yunet(img_bgr, score_thresh=0.28)
+        if not full_faces:
+            full_enhanced = _enhance_contrast(img_bgr)
+            full_faces = _detect_faces_yunet(full_enhanced, score_thresh=0.25)
+            del full_enhanced
+        if not full_faces:
+            full_faces = _detect_faces_rfb(img_bgr, conf_thresh=0.65)
+
+        for (score, (sfx, sfy, sfw, sfh)) in full_faces:
+            if sfw < 16 or sfh < 16:
                 continue
-            scaled_img = cv2.resize(img_bgr, (sw, sh), interpolation=cv2.INTER_LINEAR) if scale != 1.0 else img_bgr
-            scaled_faces = _detect_faces_yunet(scaled_img, score_thresh=0.28)
-            if not scaled_faces:
-                scaled_enhanced = _enhance_contrast(scaled_img)
-                scaled_faces = _detect_faces_yunet(scaled_enhanced, score_thresh=0.25)
-            if not scaled_faces and scale == 1.0:
-                scaled_faces = _detect_faces_rfb(scaled_img, conf_thresh=0.65)
+            face_box = (sfx, sfy, sfw, sfh)
+            crop_test = img_bgr[sfy:sfy+sfh, sfx:sfx+sfw]
+            if _is_qr_or_barcode(crop_test):
+                continue
 
-            for (score, (sfx, sfy, sfw, sfh)) in scaled_faces:
-                orig_fx = int(round(sfx / scale))
-                orig_fy = int(round(sfy / scale))
-                orig_fw = int(round(sfw / scale))
-                orig_fh = int(round(sfh / scale))
-                if orig_fw < 16 or orig_fh < 16:
-                    continue
-                face_box = (orig_fx, orig_fy, orig_fw, orig_fh)
-                
-                crop_test = img_bgr[orig_fy:orig_fy+orig_fh, orig_fx:orig_fx+orig_fw]
-                if _is_qr_or_barcode(crop_test):
-                    continue
-
-                portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box)
-                validated_detections.append({
-                    "score": score,
-                    "face_box": face_box,
-                    "portrait_box": portrait_box,
-                    "source": f"full_page_scale_{scale}x"
-                })
+            portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box)
+            validated_detections.append({
+                "score": score,
+                "face_box": face_box,
+                "portrait_box": portrait_box,
+                "source": "full_page"
+            })
 
         # -------------------------------------------------------------
         # MERGE & DEDUPLICATE DETECTIONS (NMS + PROXIMITY CLUSTERING)
@@ -636,6 +636,14 @@ def detect_and_crop_document_face(
             f"confidence={float(p_score):.3f}, crop={c_w}x{c_h}px, quality={quality}"
         )
 
+        try:
+            portrait_crop_pil.close()
+            del portrait_crop_pil, crop_np, gray_crop, img_bgr
+        except Exception:
+            pass
+        force_gc()
+        log_memory("after_face_analysis", f"faces={primary_portrait_face_count}")
+
         return {
             "face_detected": True,
             "face_crop_available": crop_save_success or (output_crop_path is None),
@@ -658,6 +666,8 @@ def detect_and_crop_document_face(
 
     except Exception as e:
         logger.error(f"[FACE_ANALYSIS] Unexpected error in detect_and_crop_document_face: {e}", exc_info=True)
+        force_gc()
+        log_memory("after_face_analysis_error", str(e)[:60])
         return {
             "face_detected": False,
             "face_crop_available": False,
@@ -866,6 +876,12 @@ def analyze_photo_authenticity(
         else:
             assessment = "POTENTIALLY FAKE / MANIPULATED"
 
+        try:
+            del crop, recomp, ela_diff, gray_crop, sobel_x, sobel_y, ycrcb, skin_mask
+        except Exception:
+            pass
+        force_gc()
+
         return {
             "document_photo_extracted": True,
             "face_detected": True,
@@ -890,6 +906,7 @@ def analyze_photo_authenticity(
 
     except Exception as err:
         logger.warning(f"Error analyzing photo authenticity: {err}")
+        force_gc()
         return {
             "document_photo_extracted": True,
             "face_detected": True,

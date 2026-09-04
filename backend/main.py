@@ -31,6 +31,9 @@ try:
 except Exception as e:
     print(f"[TRUSTID Startup] Database seed note: {e}")
 
+from backend.services.memory_utils import log_memory
+log_memory("startup", "FastAPI app initialized")
+
 app = FastAPI(
     title="TRUSTID API",
     description="Secure Digital Document & Identity Screening System - Trust AI Multimodal Intelligence",
