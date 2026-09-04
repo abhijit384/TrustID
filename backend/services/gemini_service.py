@@ -606,7 +606,12 @@ Return strictly valid JSON with this structure:
     last_err = None
     response = None
 
-    candidate_models = ["gemini-3.5-flash-lite", "gemini-3.5-flash", "gemini-flash-latest", "gemini-3.7-flash"]
+    env_model = os.getenv("GEMINI_MODEL")
+    candidate_models = []
+    if env_model:
+        candidate_models.append(env_model)
+    candidate_models.extend(["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"])
+    candidate_models = list(dict.fromkeys(candidate_models))
 
     config_args = {
         "temperature": 0.1,
