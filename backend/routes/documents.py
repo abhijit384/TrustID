@@ -766,10 +766,10 @@ def analyze_screening(
         detected_fields_cnt = len([f for f in ocr_result.get("fields", []) if f.get("field_value_demo") != "Not detected"])
         
         # 1. SCREENABILITY CHECK: Is it a recognizable/screenable identity document?
-        # Non-document = 0 fields detected AND no face detected AND 0 passed checks AND empty/unparseable OCR text AND NOT a specimen
+        # Non-document = 0 fields detected AND no face detected AND empty/unparseable OCR text (<15 chars) AND NOT a specimen
         is_non_document = (
-            (detected_fields_cnt == 0 and not doc_face_detected and not any(c.get("status") == "Passed" for c in val_result.get("checks", [])) and len(ocr_candidate_text.strip()) < 10) or
-            (str(detected_type).lower() in ["not a document", "random photo", "unsupported file", "invalid file", "non-document"] and not is_sample_specimen)
+            (detected_fields_cnt == 0 and not doc_face_detected and len(ocr_candidate_text.strip()) < 15) or
+            any(k in str(detected_type).lower() for k in ["not a document", "noise", "random photo", "unsupported", "invalid file", "non-document", "invalid / noise"])
         ) and not is_sample_specimen
 
         # 2. TRUE INCONCLUSIVE CHECK: Valid document, but evidence is insufficient or quality is too low
