@@ -1,3 +1,4 @@
+import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -190,14 +191,13 @@ def validate_document_rules(fields_dict: Dict[str, str], gemini_data: Optional[D
             "message": "Document number and subject cleared against international watchlists and revoked credential databases."
         })
 
-    # 6. Specimen / Sample Template & Placeholder Check
+    # 6. Specimen / Sample Template & Placeholder Check (using regex word boundaries)
     ocr_raw = str(gemini_data.get("raw_ocr_text", "")).upper() if gemini_data else ""
-    gem_reasons_str = " ".join(gemini_data.get("authenticity_assessment", {}).get("reasons", [])).upper() if gemini_data else ""
-    gem_expl_str = str(gemini_data.get("explanation", "")).upper() if gemini_data else ""
-    combined_text = f"{name_upper} {clean_doc_no} {ocr_raw} {gem_reasons_str} {gem_expl_str}"
+    # Only search document text, name, doc number, and explicit specimen phrases (avoid loose matching in general AI explanations)
+    doc_text_to_check = f"{name_upper} {clean_doc_no} {ocr_raw}"
     
-    specimen_kws = ["SPECIMEN", "SAMPLE", "DEMO", "TEST", "NOT VALID", "FOR DEMONSTRATION", "MOCK", "TRAINING", "VOID", "SAMPLE ONLY", "CONNOR SAMPLE", "JOHN DOE", "JANE DOE", "N99999999"]
-    is_sample_specimen = any(kw in combined_text for kw in specimen_kws)
+    specimen_pattern = r'\b(SPECIMEN|SAMPLE|SAMPLE\s+ONLY|DEMO|NOT\s+VALID|FOR\s+DEMONSTRATION|MOCK|TRAINING|VOID|CONNOR\s+SAMPLE|JOHN\s+DOE|JANE\s+DOE|N99999999)\b'
+    is_sample_specimen = bool(re.search(specimen_pattern, doc_text_to_check, re.IGNORECASE))
     
     if is_sample_specimen:
         checks.append({
