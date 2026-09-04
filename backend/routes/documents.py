@@ -763,13 +763,15 @@ def analyze_screening(
         # Check for True Inconclusive conditions (insufficient optical evidence or unusable quality)
         doc_quality = gemini_res.get("document_quality", {})
         is_poor_quality = (doc_quality.get("status") or "").capitalize() == "Poor"
-        detected_fields_cnt = len([f for f in ocr_result.get("fields", []) if f.get("field_value_demo") != "Not detected"])
+        demographic_fields = [f for f in ocr_result.get("fields", []) if f.get("field_name") != "Document Type" and f.get("field_value_demo") != "Not detected"]
+        detected_fields_cnt = len(demographic_fields)
         
         # 1. SCREENABILITY CHECK: Is it a recognizable/screenable identity document?
-        # Non-document = 0 fields detected AND no face detected AND empty/unparseable OCR text (<15 chars) AND NOT a specimen
+        # Non-document = 0 demographic fields detected AND no face detected AND empty/unparseable OCR text (<15 chars) AND NOT a specimen
         is_non_document = (
             (detected_fields_cnt == 0 and not doc_face_detected and len(ocr_candidate_text.strip()) < 15) or
-            any(k in str(detected_type).lower() for k in ["not a document", "noise", "random photo", "unsupported", "invalid file", "non-document", "invalid / noise"])
+            (detected_fields_cnt == 0 and not doc_face_detected and any(k in str(detected_type).lower() for k in ["unknown", "not a document", "noise", "random", "unsupported", "invalid", "non-document", "other"])) or
+            any(k in str(detected_type).lower() for k in ["not a document", "noise", "random photo", "unsupported file", "invalid file", "non-document", "invalid / noise"])
         ) and not is_sample_specimen
 
         # 2. TRUE INCONCLUSIVE CHECK: Valid document, but evidence is insufficient or quality is too low
