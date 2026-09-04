@@ -28,11 +28,11 @@ def extract_image_metadata_forensics(image_path: str) -> Dict[str, Any]:
         }
 
     try:
-        pil_img = Image.open(image_path)
-        exif = pil_img._getexif()
-        format_info = pil_img.format or "JPEG"
-        size_info = f"{pil_img.width}x{pil_img.height}"
-        mode_info = pil_img.mode
+        with Image.open(image_path) as pil_img:
+            exif = pil_img._getexif()
+            format_info = pil_img.format or "JPEG"
+            size_info = f"{pil_img.width}x{pil_img.height}"
+            mode_info = pil_img.mode
 
         details = [f"Image Format: {format_info} ({size_info}, Color Mode: {mode_info})"]
         software_detected = None
@@ -131,6 +131,7 @@ def detect_stamp_forgery(image_path: str, gemini_data: Optional[Dict[str, Any]] 
             stamp_pixels = cv2.countNonZero(stamp_mask)
             total_pixels = max(1, img.shape[0] * img.shape[1])
             stamp_ratio = stamp_pixels / total_pixels
+            del img, hsv, mask1, mask2, stamp_mask
 
             if stamp_ratio > 0.005 and not indicators:
                 indicators.append("Border entry/consular ink seal detected. Pigment variance within expected analog tolerance.")
@@ -320,6 +321,9 @@ def run_tampering_analysis(
     explanation = "Comprehensive 4-pillar forensic tampering analysis completed."
     if indicators_list:
         explanation = f"Detected {len(indicators_list)} forensic tampering indicator(s): {', '.join([i['type'] for i in indicators_list])}."
+
+    import gc
+    gc.collect()
 
     return {
         "status": overall_status,

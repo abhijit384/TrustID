@@ -27,7 +27,7 @@ def get_paddle_engine():
 def preprocess_image_for_ocr(image_path: str):
     """
     OpenCV preprocessing pipeline for enhanced OCR detection:
-    - Resizing / aspect ratio normalization
+    - Resizing / aspect ratio normalization (max dimension 1400px for memory efficiency)
     - Grayscale conversion
     - Contrast Limited Adaptive Histogram Equalization (CLAHE)
     - Bilateral filtering to denoise while preserving sharp character edges
@@ -41,6 +41,12 @@ def preprocess_image_for_ocr(image_path: str):
         return None, None
 
     h, w = img.shape[:2]
+    max_dim = max(h, w)
+    if max_dim > 1400:
+        scale = 1400.0 / max_dim
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        h, w = img.shape[:2]
 
     # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
@@ -48,14 +54,17 @@ def preprocess_image_for_ocr(image_path: str):
     # CLAHE for dynamic local contrast enhancement
     clahe = cv2.createCLAHE(clipLimit=2.5, tileGridSize=(8, 8))
     contrast_enhanced = clahe.apply(gray)
+    del gray
 
     # Bilateral filter for edge-preserving denoising
     denoised = cv2.bilateralFilter(contrast_enhanced, 9, 75, 75)
+    del contrast_enhanced
 
     # Adaptive thresholding to segment dark text on light backgrounds
     thresh = cv2.adaptiveThreshold(
         denoised, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 15, 6
     )
+    del denoised
 
     return img, thresh
 
@@ -265,6 +274,7 @@ def extract_document_ocr(
         if img is not None:
             h, w = img.shape[:2]
             print(f"[OCR] Preprocessed: image dimensions {w}x{h} px")
+            del img, thresh
 
         # Step 2: Try PaddleOCR if available
         paddle = get_paddle_engine()
@@ -297,6 +307,8 @@ def extract_document_ocr(
             pdf = pdfium.PdfDocument(orig_pdf)
             pdf_lines = [p.get_textpage().get_text_range() for p in pdf]
             raw_text = "\n".join([l.strip() for l in pdf_lines if l.strip()])
+            pdf.close()
+            del pdf
             print(f"[OCR] Extracted {len(raw_text)} characters from companion PDF.")
         except Exception:
             pass
@@ -306,9 +318,9 @@ def extract_document_ocr(
         try:
             # Load text regions and metadata
             from PIL import Image
-            pil_img = Image.open(file_path)
-            w, h = pil_img.size
-            raw_text = f"DOCUMENT OPTICAL SCAN\nDimensions: {w}x{h}\nFormat: {pil_img.format}\n"
+            with Image.open(file_path) as pil_img:
+                w, h = pil_img.size
+                raw_text = f"DOCUMENT OPTICAL SCAN\nDimensions: {w}x{h}\nFormat: {pil_img.format}\n"
             
             # Check for standard synthetic demo text patterns in test documents
             with open(file_path, "rb") as f:

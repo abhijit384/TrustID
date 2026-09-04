@@ -125,14 +125,14 @@ async def create_screening_upload(
             original_name = document.filename
             file_bytes = await document.read()
 
-            # Automatic PDF conversion: extract digital text and render pages
+            # Automatic PDF conversion: extract digital text and render page 0
             is_pdf = file_bytes.startswith(b"%PDF") or original_name.lower().endswith(".pdf")
             if is_pdf:
                 try:
                     import pypdfium2 as pdfium
                     pdf = pdfium.PdfDocument(file_bytes)
                     
-                    # Extract all text from all pages
+                    # Extract text sequentially
                     pdf_lines = []
                     for p_idx in range(len(pdf)):
                         try:
@@ -156,43 +156,35 @@ async def create_screening_upload(
                         pf.write(file_bytes)
 
                     if len(pdf) > 0:
-                        best_page_img = None
-                        target_page_idx = 0
-                        # Check first 5 pages for embedded portrait
-                        for p_idx in range(min(5, len(pdf))):
-                            try:
-                                p_img = pdf[p_idx].render(scale=2.5).to_pil()
-                                temp_page_path = f"{doc_path}_page_{p_idx}.jpg"
-                                p_img.convert("RGB").save(temp_page_path, format="JPEG", quality=90)
-                                p_res = detect_and_crop_document_face(temp_page_path)
-                                if os.path.exists(temp_page_path):
-                                    try:
-                                        os.remove(temp_page_path)
-                                    except Exception:
-                                        pass
-                                if p_res.get("face_detected"):
-                                    best_page_img = p_img
-                                    target_page_idx = p_idx
-                                    print(f"[CONVERT] Confirmed face portrait on PDF page {p_idx + 1}")
-                                    break
-                            except Exception as p_err:
-                                logger.debug(f"PDF page {p_idx} render note: {p_err}")
-
-                        if best_page_img is None:
-                            best_page_img = pdf[0].render(scale=2.5).to_pil()
-                        
-                        best_page_img.convert("RGB").save(doc_path, format="JPEG", quality=95)
-                        print(f"[CONVERT] Successfully rendered PDF '{original_name}' (page {target_page_idx + 1}) to JPEG: {doc_path}")
+                        # Render page 0 directly at scale 1.8 (~150 DPI) for memory efficiency
+                        rendered = pdf[0].render(scale=1.8).to_pil()
+                        rendered.convert("RGB").save(doc_path, format="JPEG", quality=92)
+                        rendered.close()
+                        del rendered
+                        print(f"[CONVERT] Successfully rendered PDF '{original_name}' (page 1) to JPEG: {doc_path}")
                     else:
                         with open(doc_path, "wb") as f:
                             f.write(file_bytes)
+                    pdf.close()
+                    del pdf
                 except Exception as pdf_err:
                     print(f"[CONVERT] pypdfium2 conversion note: {pdf_err}")
                     with open(doc_path, "wb") as f:
                         f.write(file_bytes)
             else:
-                with open(doc_path, "wb") as f:
-                    f.write(file_bytes)
+                # Normalize EXIF orientation and clamp oversized camera images to max 1400px
+                try:
+                    import io
+                    from PIL import Image, ImageOps
+                    with Image.open(io.BytesIO(file_bytes)) as pil_img:
+                        pil_img = ImageOps.exif_transpose(pil_img) or pil_img
+                        max_dim = 1400
+                        if pil_img.width > max_dim or pil_img.height > max_dim:
+                            pil_img.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
+                        pil_img.convert("RGB").save(doc_path, format="JPEG", quality=92)
+                except Exception:
+                    with open(doc_path, "wb") as f:
+                        f.write(file_bytes)
         elif sample_id:
             sample_path = str(SAMPLES_DIR / f"{sample_id}.jpg")
             if os.path.exists(sample_path):
@@ -223,8 +215,17 @@ async def create_screening_upload(
             face_filename = f"{screening_id}_face.jpg"
             face_path = str(FACES_DIR / face_filename)
             p_bytes = await presented_face.read()
-            with open(face_path, "wb") as f:
-                f.write(p_bytes)
+            try:
+                import io
+                from PIL import Image, ImageOps
+                with Image.open(io.BytesIO(p_bytes)) as p_img:
+                    p_img = ImageOps.exif_transpose(p_img) or p_img
+                    if p_img.width > 800 or p_img.height > 800:
+                        p_img.thumbnail((800, 800), Image.Resampling.LANCZOS)
+                    p_img.convert("RGB").save(face_path, format="JPEG", quality=90)
+            except Exception:
+                with open(face_path, "wb") as f:
+                    f.write(p_bytes)
 
         started_at = datetime.datetime.utcnow()
 
@@ -276,6 +277,9 @@ async def create_screening_upload(
         db.rollback()
         logger.error(f"[UPLOAD] Upload processing failed: {upload_err}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to create document screening record: {str(upload_err)}")
+    finally:
+        import gc
+        gc.collect()
 
 
 @router.post("/{screening_identifier}/analyze", response_model=ScreeningDetail)
@@ -353,9 +357,13 @@ def analyze_screening(
                 import pypdfium2 as pdfium
                 pdf = pdfium.PdfDocument(doc_path)
                 if len(pdf) > 0:
-                    rendered_page = pdf[0].render(scale=2.0).to_pil()
-                    rendered_page.convert("RGB").save(doc_path, format="JPEG", quality=95)
+                    rendered_page = pdf[0].render(scale=1.8).to_pil()
+                    rendered_page.convert("RGB").save(doc_path, format="JPEG", quality=92)
+                    rendered_page.close()
+                    del rendered_page
                     print(f"[CONVERT] Self-healing successfully converted PDF to JPEG: {doc_path}")
+                pdf.close()
+                del pdf
         except Exception as conv_err:
             print(f"[CONVERT] Self-healing PDF conversion note: {conv_err}")
 
@@ -849,6 +857,9 @@ def analyze_screening(
         screening.investigation_notes = f"AI Analysis Error: {str(err)}"
         db.commit()
         raise HTTPException(status_code=500, detail=f"Analysis processing error: {str(err)}")
+    finally:
+        import gc
+        gc.collect()
 
 
 @router.get("/{screening_identifier}", response_model=ScreeningDetail)

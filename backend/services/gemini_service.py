@@ -503,15 +503,19 @@ def analyze_document_with_gemini(
         with open(document_path, "rb") as f:
             pdf_bytes = f.read()
         contents.append(types.Part.from_bytes(data=pdf_bytes, mime_type="application/pdf"))
+        del pdf_bytes
     else:
         try:
-            doc_img = Image.open(document_path).convert("RGB")
+            with Image.open(document_path) as orig_img:
+                doc_img = orig_img.convert("RGB")
             max_side = 1000
             if doc_img.width > max_side or doc_img.height > max_side:
                 doc_img.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
             buf = io.BytesIO()
             doc_img.save(buf, format="JPEG", quality=85)
             contents.append(types.Part.from_bytes(data=buf.getvalue(), mime_type="image/jpeg"))
+            buf.close()
+            del buf, doc_img
         except Exception:
             with open(document_path, "rb") as f:
                 contents.append(types.Part.from_bytes(data=f.read(), mime_type="image/jpeg"))
@@ -691,10 +695,18 @@ def generate_dynamic_cv_analysis(
 
     img = cv2.imread(document_path)
     if img is None:
-        pil_img = Image.open(document_path).convert("RGB")
-        img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+        with Image.open(document_path) as pil_raw:
+            pil_img = pil_raw.convert("RGB")
+            img = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
     h, w = img.shape[:2]
+    max_dim = max(h, w)
+    if max_dim > 1200:
+        scale = 1200.0 / max_dim
+        new_w, new_h = int(w * scale), int(h * scale)
+        img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        h, w = img.shape[:2]
+
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     blur_var = float(cv2.Laplacian(gray, cv2.CV_64F).var())
 
@@ -751,6 +763,7 @@ def generate_dynamic_cv_analysis(
                     round(float(cy + ch) / h, 3),
                     round(float(cx + cw) / w, 3)
                 ]
+            del edges
         except Exception:
             pass
 
@@ -766,6 +779,7 @@ def generate_dynamic_cv_analysis(
         ela_gray = cv2.cvtColor(ela_diff, cv2.COLOR_BGR2GRAY)
         if float(ela_gray.std()) > 8.0 and float(ela_diff.mean()) > 15.0:
             ela_anomaly = True
+        del resaved, ela_diff, ela_gray, encimg
     except Exception:
         pass
 
@@ -785,8 +799,13 @@ def generate_dynamic_cv_analysis(
                     masked_box_detected = True
                     masked_box_reason = "Solid rectangular mask detected obscuring signature or credential text region."
                     break
+        del inner_gray, thresh_white
     except Exception:
         pass
+
+    del img, gray
+    import gc
+    gc.collect()
 
     is_pan_marker = any(k in filename.lower() or k in (ocr_context or "").lower() for k in ["pan", "pvc", "income tax", "permanent account"])
     is_tampered_doc = (
