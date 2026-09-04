@@ -41,13 +41,16 @@ CORE BORDER SCREENING OBJECTIVES:
    - Pillar 3: Stamp Forgery Detection (Detect tampered consular entry/exit stamps, counterfeit visa ink seals, ink bleed distortion, microprint guilloche disruption).
    - Pillar 4: Image Metadata & Substrate Analysis (Detect digital editing software signatures, stripped headers, compression anomalies).
 6. EMBEDDED PORTRAIT / FACE ANALYSIS:
-   - Count the total number of facial portraits visible on the document. Official identity documents must contain exactly one face.
-   - If more than one face is visible, flag multiple_faces_detected = true and classify as an anomaly.
+   - Detect and count the facial portraits visible on the document. Official identity documents typically contain one portrait.
+   - If more than one face is visible inside the primary portrait area, flag multiple_faces_detected = true.
+   - If no face is present on the document, record face_detected = false without assuming the whole document is fake or inconclusive.
    - Provide normalized bounding box coordinates [ymin, xmin, ymax, xmax] (0.0 to 1.0) for primary portrait cropping.
-   - Strictly classify photo_status as "Real Photo" or "Fake / Tampered Photo".
-7. REAL VS FAKE AI DOCUMENT IDENTIFICATION:
-   - Scrutinize for AI generation signatures: synthetic diffusion textures, distorted microtext, hallucinated pseudo-lettering, lack of genuine security guilloche, deepfake portrait, unrealistic lighting or facial asymmetry.
-   - Categorize document authenticity strictly as "Real Document", "Fake Document", or "Inconclusive".
+   - Strictly classify photo_status as "Real Photo", "Fake / Tampered Photo", or "No Face Detected".
+7. AUTHENTICITY CLASSIFICATION CATEGORIES:
+   - Categorize document authenticity strictly as one of:
+     * "Real Document" (Likely Genuine): Layout, typography, security elements, and demographic fields conform to authentic standards. Missing 1 optional field or lack of photo portrait does NOT make a document inconclusive.
+     * "Fake Document" / "Tampered Document" (Potentially Suspicious / Fake): Direct evidence of physical/digital tampering, photo replacement, deepfake portrait, text alteration, unissued specimen template, or MRZ parity mismatch.
+     * "Inconclusive": Use ONLY when evidence is genuinely insufficient (e.g. document image is severely blurred/damaged/cut-off, critical text is unreadable, or unresolved contradictory evidence prevents a reliable assessment). Provide specific forensic reasons.
    - Assign risk score (0-100) and border recommendation ("ALLOW ENTRY / STANDARD CLEARANCE", "REFER TO SECONDARY INSPECTION", or "DETAIN / ENFORCEMENT ACTION").
 """
 
@@ -396,7 +399,7 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
                 if ind not in reasons:
                     reasons.append(ind)
 
-    # Determine Authenticity: strictly Real Document vs Fake / Tampered Document
+    # Determine Authenticity: Real Document vs Fake / Tampered Document vs Inconclusive
     final_risk = max(5, min(95, risk_score))
 
     auth_gemini = data.get("authenticity_assessment", {})
@@ -422,6 +425,15 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
         gem_is_real is False
     )
 
+    # Check if true inconclusive condition is met:
+    # Genuinely unusable image quality or unresolvable contradictory evidence with insufficient optical signals
+    detected_fields_count = len([v for k, v in data.get("extracted_fields", {}).items() if v and str(v).lower() not in ["null", "none", "not detected", ""]])
+    is_poor_quality = q_status == "Poor"
+    is_true_inconclusive = (
+        ("inconclusive" in gem_class and not is_tampered_flag and not is_specimen_sample) or
+        (is_poor_quality and detected_fields_count < 2 and not is_tampered_flag)
+    )
+
     if is_specimen_sample:
         final_risk = max(final_risk, 88.0)
         auth_class = "Fake Document"
@@ -431,11 +443,18 @@ def calculate_dynamic_risk_and_authenticity(data: Dict[str, Any]) -> Dict[str, A
             "Invalid Credential: Document is an unissued specimen/sample template marked with 'SAMPLE' or placeholder demonstration data.",
             "Demonstration and training exemplar cards cannot be accepted as valid identity documents."
         ]
-    elif final_risk >= 45 or is_tampered_flag or len(mismatches) > 1 or face_data.get("photo_status") == "Fake / Tampered Photo":
+    elif is_tampered_flag or final_risk >= 50 or len(mismatches) > 1 or face_data.get("photo_status") == "Fake / Tampered Photo":
         auth_class = "Tampered Document" if ("tamper" in gem_class or has_tampering) else "Fake Document"
         is_real = False
         auth_conf = max(0.90, float(auth_gemini.get("confidence", 0.92)))
         auth_reasons = reasons if reasons else ["Significant optical, structural, or layout anomalies detected indicating non-authentic document."]
+    elif is_true_inconclusive:
+        auth_class = "Inconclusive"
+        is_real = None
+        final_risk = max(35.0, min(45.0, final_risk))
+        auth_conf = None
+        inconc_reason = quality.get("reason") or "Document image resolution and optical clarity are insufficient to reliably inspect security features."
+        auth_reasons = [f"Inconclusive — {inconc_reason}"]
     else:
         auth_class = "Real Document"
         is_real = True

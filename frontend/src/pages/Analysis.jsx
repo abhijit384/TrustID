@@ -292,18 +292,22 @@ export const Analysis = () => {
   const tampModules = borderCheckpoint.module3_tampering?.modules || {};
   const multiIdCheck = borderCheckpoint.module4_face_verification?.multiple_identities_check || {};
 
-  // Authenticity Assessment resolution: Real Document vs Fake Document
+  // Authenticity Assessment resolution: Likely Genuine vs Potentially Suspicious vs Inconclusive
   const authClass = screening.authenticity_classification || findings.authenticity_assessment?.classification || (screening.risk_score >= 50 ? "Fake Document" : "Real Document");
-  const authConf = Math.round((screening.authenticity_confidence || findings.authenticity_assessment?.confidence || 0.95) * 100);
+  const authConf = screening.authenticity_confidence !== null && screening.authenticity_confidence !== undefined
+    ? Math.round(screening.authenticity_confidence * 100)
+    : (findings.authenticity_assessment?.confidence ? Math.round(findings.authenticity_assessment.confidence * 100) : null);
   const authReasons = screening.authenticity_reasons || findings.authenticity_assessment?.reasons || [];
+  const decisionTrace = explain.decision_trace || findings.decision_trace || {};
 
   const isLikelyGenuine = authClass.toLowerCase().includes("genuine") || authClass.toLowerCase().includes("real");
-  const isSuspicious = authClass.toLowerCase().includes("potentially") || authClass.toLowerCase().includes("suspicious") || authClass.toLowerCase().includes("fake");
+  const isSuspicious = authClass.toLowerCase().includes("potentially") || authClass.toLowerCase().includes("suspicious") || authClass.toLowerCase().includes("fake") || authClass.toLowerCase().includes("tamper");
+  const isInconclusive = authClass.toLowerCase().includes("inconclusive") || (!isLikelyGenuine && !isSuspicious);
 
   const displayAuthClass = isLikelyGenuine
-    ? "REAL DOCUMENT"
+    ? "LIKELY GENUINE"
     : isSuspicious
-      ? "FAKE DOCUMENT"
+      ? "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
       : "INCONCLUSIVE";
 
   // Document Face Analysis (Always evaluated on ID's embedded face)
@@ -448,7 +452,7 @@ export const Analysis = () => {
                 {isScreeningCompleted && (
                   <>
                     <span>•</span>
-                    <span>Confidence: <strong className="text-white">{authConf}%</strong></span>
+                    <span>Confidence: <strong className="text-white">{authConf !== null ? `${authConf}%` : 'Uncertain'}</strong></span>
                     <span>•</span>
                     <span>Screening Risk: <strong className={screening.risk_score >= 60 ? 'text-rose-400' : screening.risk_score >= 30 ? 'text-amber-400' : 'text-emerald-400'}>{screening.risk_level.toUpperCase()} ({screening.risk_score}/100)</strong></span>
                     <span>•</span>
@@ -758,10 +762,10 @@ export const Analysis = () => {
 
               <div className="bg-slate-950/80 px-4 py-2 rounded-xl border border-slate-800 self-start sm:self-auto text-right">
                 <span className="text-[10px] font-mono uppercase text-slate-400 block">Assessment Confidence</span>
-                <span className={`text-2xl font-mono font-extrabold ${
+                <span className={`text-xl sm:text-2xl font-mono font-extrabold ${
                   isLikelyGenuine ? 'text-emerald-400' : isSuspicious ? 'text-rose-400' : 'text-amber-400'
                 }`}>
-                  {authConf}%
+                  {authConf !== null ? `${authConf}%` : 'Uncertain'}
                 </span>
               </div>
             </div>
@@ -1419,8 +1423,71 @@ export const Analysis = () => {
                   ? 'bg-rose-500/10 text-rose-300 border-rose-500/30'
                   : 'bg-amber-500/10 text-amber-300 border-amber-500/30'
             }`}>
-              {authClass.toUpperCase()}
+              {displayAuthClass}
             </span>
+          </div>
+
+          {/* Structured Decision Trace Telemetry Card */}
+          <div className="p-5 rounded-2xl bg-slate-900/80 border border-slate-800 space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-mono font-bold uppercase tracking-wider text-cyan-400 flex items-center gap-2">
+                <Cpu className="w-4 h-4" /> Authenticity Decision Trace
+              </span>
+              <span className="text-[10px] font-mono text-slate-400">
+                Evidence Sufficiency: <strong className={decisionTrace.evidence_sufficiency === 'Insufficient' ? 'text-amber-400' : 'text-emerald-400'}>{decisionTrace.evidence_sufficiency || 'Sufficient'}</strong>
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <span className="text-[10px] font-mono text-slate-400 uppercase block">1. OCR Quality</span>
+                <span className="font-semibold text-slate-200 mt-0.5 block">{decisionTrace.ocr_quality || 'Acceptable'}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <span className="text-[10px] font-mono text-slate-400 uppercase block">2. Field Consistency</span>
+                <span className="font-semibold text-slate-200 mt-0.5 block">{decisionTrace.field_consistency || 'Consistent'}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <span className="text-[10px] font-mono text-slate-400 uppercase block">3. Document Structure</span>
+                <span className="font-semibold text-slate-200 mt-0.5 block">{decisionTrace.document_structure || 'Conforms to Standards'}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <span className="text-[10px] font-mono text-slate-400 uppercase block">4. Visual Tampering</span>
+                <span className={`font-semibold mt-0.5 block ${(decisionTrace.visual_tampering || '').includes('Anomaly') ? 'text-rose-400' : 'text-emerald-400'}`}>
+                  {decisionTrace.visual_tampering || 'None Detected'}
+                </span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <span className="text-[10px] font-mono text-slate-400 uppercase block">5. Portrait Analysis</span>
+                <span className="font-semibold text-slate-200 mt-0.5 block">{decisionTrace.portrait_analysis || docFaceStatus}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <span className="text-[10px] font-mono text-slate-400 uppercase block">6. Face Biometrics</span>
+                <span className="font-semibold text-slate-200 mt-0.5 block">{decisionTrace.face_analysis || (faceDetected ? '1 Face Detected' : 'No Face Detected')}</span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <span className="text-[10px] font-mono text-slate-400 uppercase block">7. Critical Conflicts</span>
+                <span className={`font-semibold mt-0.5 block ${(decisionTrace.critical_conflicts || '').includes('Unresolved') ? 'text-amber-400' : 'text-emerald-400'}`}>
+                  {decisionTrace.critical_conflicts || 'None'}
+                </span>
+              </div>
+              <div className="p-3 rounded-xl bg-slate-950/60 border border-slate-800/80">
+                <span className="text-[10px] font-mono text-slate-400 uppercase block">8. Final Decision</span>
+                <span className={`font-bold mt-0.5 block ${isLikelyGenuine ? 'text-emerald-300' : isSuspicious ? 'text-rose-300' : 'text-amber-300'}`}>
+                  {decisionTrace.final_result || authClass}
+                </span>
+              </div>
+            </div>
+
+            {decisionTrace.primary_reason && (
+              <div className="p-3 rounded-xl bg-slate-950/80 border border-slate-800 text-xs flex items-start gap-2">
+                <Sparkles className="w-3.5 h-3.5 text-cyan-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold block">Primary Forensic Driver:</span>
+                  <p className="text-slate-200 leading-relaxed mt-0.5">{decisionTrace.primary_reason}</p>
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">

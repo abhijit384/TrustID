@@ -656,7 +656,7 @@ def analyze_screening(
             tamp_result["tampering_score"] = max(tamp_result.get("tampering_score", 0.0), 50.0)
             tamp_result["status"] = "Tampering Anomaly Detected"
 
-        # Final Harmonized Authenticity and Risk Determination (Real vs Fake / Tampered Document)
+        # Final Harmonized Authenticity and Risk Determination
         initial_auth_str = str(initial_auth).lower()
         explicit_fake_auth = ("fake" in initial_auth_str or "tamper" in initial_auth_str or "counterfeit" in initial_auth_str or "sample" in initial_auth_str or "specimen" in initial_auth_str) and not any(neg in initial_auth_str for neg in ["no ", "not ", "never", "non-fake", "genuine"])
         
@@ -666,12 +666,12 @@ def analyze_screening(
         has_gemini_tampering = (
             (not is_gem_tamp_clean and ("tamper" in gem_tamp_st or "anomaly detected" in gem_tamp_st)) or
             float(gem_tamp.get("score", 0.0) or 0.0) >= 45.0 or
+            bool(gem_tamp.get("photo_replacement_detected")) or
             bool(gem_tamp.get("text_manipulation_detected")) or
-            bool(gem_tamp.get("photo_replacement_detected"))
+            bool(gem_tamp.get("stamp_forgery_detected"))
         )
 
-        is_fake_doc = (
-            score >= 50.0 or
+        has_tampering_evidence = (
             tamp_result.get("tampering_score", 0) >= 45.0 or
             is_face_altered or
             multiple_faces_in_portrait or
@@ -681,15 +681,36 @@ def analyze_screening(
             is_dob_fraud or
             has_gemini_tampering or
             gemini_res.get("mrz_analysis", {}).get("status") == "Mismatch" or
-            explicit_fake_auth
+            explicit_fake_auth or
+            score >= 60.0
         )
 
-        if is_fake_doc:
+        # Check for critical conflicts between OCR and visual inspection
+        conflict_fields = [f for f in ocr_result.get("fields", []) if f.get("validation_status") == "conflict"]
+        critical_conflicts = [f for f in conflict_fields if f.get("field_name") in ["Full Name", "Document Number", "Date of Birth"]]
+        has_unresolved_critical_conflicts = len(critical_conflicts) > 0 and gemini_res.get("mrz_analysis", {}).get("status") != "Match"
+
+        # Check for True Inconclusive conditions (insufficient optical evidence or unusable quality)
+        doc_quality = gemini_res.get("document_quality", {})
+        is_poor_quality = (doc_quality.get("status") or "").capitalize() == "Poor"
+        detected_fields_cnt = len([f for f in ocr_result.get("fields", []) if f.get("field_value_demo") != "Not detected"])
+        
+        is_true_inconclusive = (
+            not has_tampering_evidence and (
+                ("inconclusive" in initial_auth_str and not any(k in initial_auth_str for k in ["real", "fake", "tamper", "sample"])) or
+                (is_poor_quality and detected_fields_cnt < 3) or
+                (has_unresolved_critical_conflicts and detected_fields_cnt < 4)
+            )
+        )
+
+        auth_conf = None
+        if has_tampering_evidence:
             auth_classification = "Tampered Document" if ("tamper" in initial_auth_str or has_gemini_tampering) else "Fake Document"
             score = max(score, 75.0 if not (is_blacklisted_doc or is_sample_specimen) else 90.0)
             level = "High"
             border_decision = "DETAIN / ENFORCEMENT ACTION"
             border_decision_badge = "high"
+            auth_conf = float(max(0.88, float(auth_info.get("confidence", 0.94))))
             if is_blacklisted_doc:
                 auth_reasons = ["Document or subject recorded in Interpol SLTD / Watchlist. Immediate detention protocol required."]
             elif is_sample_specimen:
@@ -708,12 +729,27 @@ def analyze_screening(
                 auth_reasons = gem_tamp_inds if gem_tamp_inds else ["Observable physical or digital tampering detected across document credential substrate."]
             else:
                 auth_reasons = auth_info.get("reasons") or ["Credential exhibits physical, digital, or AI-generated tampering inconsistencies."]
+        elif is_true_inconclusive:
+            auth_classification = "Inconclusive"
+            score = max(35.0, min(45.0, score if score > 0 else 38.0))
+            level = "Medium"
+            border_decision = "REFER TO SECONDARY INSPECTION / MANUAL REVIEW"
+            border_decision_badge = "medium"
+            auth_conf = None  # Honest: confidence not measurable when optical evidence is insufficient
+            if is_poor_quality and detected_fields_cnt < 3:
+                auth_reasons = ["Inconclusive — Document image resolution or blur is insufficient to reliably inspect security features and fine typography."]
+            elif has_unresolved_critical_conflicts:
+                conflict_names = ", ".join([f["field_name"] for f in critical_conflicts])
+                auth_reasons = [f"Inconclusive — Optical character reading and visual verification produced conflicting values for {conflict_names} without verifiable security parity to resolve."]
+            else:
+                auth_reasons = auth_info.get("reasons") or ["Inconclusive — Visual and optical evidence is insufficient to make a definitive authenticity determination."]
         else:
             auth_classification = "Real Document"
             score = min(score, 18.0) if not is_expired_doc else max(25.0, score)
             level = "Low" if score < 30.0 else "Medium"
             border_decision = "ALLOW ENTRY / STANDARD CLEARANCE" if not is_expired_doc else "REVIEW / EXPIRED DOCUMENT"
             border_decision_badge = "low" if not is_expired_doc else "medium"
+            auth_conf = float(auth_info.get("confidence", 0.96))
             auth_reasons = auth_info.get("reasons") or [
                 "Official security features and layout conform to authentic document standards.",
                 "All demographic fields, formatting, and layout structure verified authentic."
@@ -724,13 +760,37 @@ def analyze_screening(
         screening.risk_score = score
         screening.risk_level = level
         screening.authenticity_classification = auth_classification
-        screening.authenticity_confidence = float(auth_info.get("confidence", 0.96))
+        screening.authenticity_confidence = auth_conf
         screening.authenticity_reasons = auth_reasons
+
+        # Structured Decision Trace for Auditing & Explainability
+        ocr_quality_val = "Poor" if is_poor_quality else ("High" if detected_fields_cnt >= 5 else "Acceptable")
+        field_consistency_val = "Material Conflict" if len(critical_conflicts) > 0 else ("Minor Formatting Discrepancies" if len(conflict_fields) > 0 else "Consistent")
+        doc_structure_val = "Conforms to Official Standards" if any(c.get("status") == "Passed" for c in val_result.get("checks", [])) else "Deviates from Standard"
+        visual_tamp_val = "Tampering Anomaly Detected" if (has_gemini_tampering or tamp_result.get("tampering_score", 0) >= 45.0) else "None Detected"
+        portrait_analysis_val = doc_face_st if doc_face_detected else "No Portrait on Credential"
+        face_analysis_val = f"{primary_portrait_face_count} Face(s) Detected" if doc_face_detected else "No Face Detected"
+        critical_conflicts_val = f"{len(critical_conflicts)} Unresolved" if len(critical_conflicts) > 0 else "None"
+        evidence_sufficiency_val = "Insufficient" if is_true_inconclusive else "Sufficient"
+
+        decision_trace = {
+            "ocr_quality": ocr_quality_val,
+            "field_consistency": field_consistency_val,
+            "document_structure": doc_structure_val,
+            "visual_tampering": visual_tamp_val,
+            "portrait_analysis": portrait_analysis_val,
+            "face_analysis": face_analysis_val,
+            "critical_conflicts": critical_conflicts_val,
+            "evidence_sufficiency": evidence_sufficiency_val,
+            "final_result": auth_classification,
+            "primary_reason": auth_reasons[0] if auth_reasons else "Comprehensive evaluation completed."
+        }
 
         screening.explainability_data = {
             "risk_factors": gemini_res.get("ai_risk_factors", []),
             "explanation": gemini_res.get("explanation"),
             "recommendation": gemini_res.get("recommendation", {}).get("action") or border_decision,
+            "decision_trace": decision_trace,
             "border_checkpoint": {
                 "decision": border_decision,
                 "decision_badge": border_decision_badge,
@@ -877,7 +937,7 @@ def get_screening_detail(
         "analysis_started_at": screening.analysis_started_at,
         "analysis_completed_at": screening.analysis_completed_at,
         "authenticity_classification": screening.authenticity_classification or ("Fake Document" if screening.risk_score >= 50 else "Real Document"),
-        "authenticity_confidence": screening.authenticity_confidence if screening.authenticity_confidence is not None else 0.95,
+        "authenticity_confidence": screening.authenticity_confidence if screening.authenticity_confidence is not None else (None if (screening.authenticity_classification or "").lower() == "inconclusive" else 0.95),
         "authenticity_reasons": screening.authenticity_reasons or (["Potential visual anomaly detected."] if screening.risk_score >= 50 else ["Official security features and layout conform to authentic document standards."]),
         "photo_forensics_status": (screening.photo_forensics_status or "Real Photo") if is_face_detected else "No Face Detected",
         "photo_forensics_score": screening.photo_forensics_score or 0.0,

@@ -372,14 +372,31 @@ def extract_document_ocr(
         disc_note = None
 
         if ocr_val and gem_val:
-            # Check reconciliation
-            if str(ocr_val).strip().upper() == str(gem_val).strip().upper():
-                final_val = str(ocr_val).strip()
+            # Smart normalization for comparison
+            norm_ocr = re.sub(r'[^A-Za-z0-9]', '', str(ocr_val).upper())
+            norm_gem = re.sub(r'[^A-Za-z0-9]', '', str(gem_val).upper())
+
+            # Check exact or normalized string match
+            is_match = (str(ocr_val).strip().upper() == str(gem_val).strip().upper()) or (norm_ocr == norm_gem and len(norm_ocr) > 0)
+
+            # Check date semantic equivalence if not matched by string
+            if not is_match and "date" in key.lower() or "birth" in key.lower():
+                try:
+                    from dateutil import parser as dt_parser
+                    d1 = dt_parser.parse(str(ocr_val).strip(), fuzzy=True)
+                    d2 = dt_parser.parse(str(gem_val).strip(), fuzzy=True)
+                    if d1.date() == d2.date():
+                        is_match = True
+                except Exception:
+                    pass
+
+            if is_match:
+                final_val = str(gem_val or ocr_val).strip()
                 source = "OCR + Gemini"
                 status = "verified"
                 conf = round(min(0.98, max(gem_conf, 0.94)), 2)
             else:
-                # Discrepancy detected! Do NOT silently overwrite.
+                # Material discrepancy detected! Record both values.
                 final_val = f"{gem_val}"
                 source = "OCR vs Gemini"
                 status = "conflict"
