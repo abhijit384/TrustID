@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   User, 
   CheckCircle2, 
@@ -9,7 +9,8 @@ import {
   Sparkles, 
   Maximize2, 
   Eye,
-  Activity
+  Activity,
+  ImageOff
 } from 'lucide-react';
 import { getMediaUrl } from '../services/api';
 
@@ -25,7 +26,12 @@ export const DocumentFaceAnalysis = ({
   originalUrl = null,
   box = null
 }) => {
+  const [imgError, setImgError] = useState(false);
   const resolvedCropUrl = getMediaUrl(cropUrl);
+
+  useEffect(() => {
+    setImgError(false);
+  }, [cropUrl]);
 
   const isNoFace = !faceDetected || status?.toLowerCase().includes("no face") || status?.toLowerCase() === "inconclusive";
 
@@ -93,15 +99,28 @@ export const DocumentFaceAnalysis = ({
             Extracted Document Portrait
           </span>
           <div className="relative rounded-xl overflow-hidden border border-slate-800 bg-slate-950/80 flex items-center justify-center min-h-[200px] group">
-            {faceDetected && resolvedCropUrl ? (
-              <img 
-                src={resolvedCropUrl} 
-                alt="Document Face Crop" 
-                className="w-full h-52 object-contain p-2" 
-              />
+            {faceDetected ? (
+              resolvedCropUrl && !imgError ? (
+                <img 
+                  src={resolvedCropUrl} 
+                  alt="Document Face Crop" 
+                  className="w-full h-52 object-contain p-2" 
+                  onError={() => setImgError(true)}
+                />
+              ) : (
+                <div className="text-center p-6 text-slate-400 space-y-2">
+                  <ImageOff className="w-8 h-8 mx-auto text-amber-400" />
+                  <p className="text-xs font-semibold text-slate-300">
+                    Portrait Crop Unavailable
+                  </p>
+                  <p className="text-[10px] text-slate-500">
+                    Face detected, but image asset could not be loaded
+                  </p>
+                </div>
+              )
             ) : (
               <div className="text-center p-6 text-slate-400 space-y-2">
-                <AlertTriangle className="w-8 h-8 mx-auto text-amber-400" />
+                <AlertTriangle className="w-8 h-8 mx-auto text-slate-500" />
                 <p className="text-xs font-semibold text-slate-300">
                   No facial photograph detected in the uploaded document.
                 </p>
@@ -110,7 +129,7 @@ export const DocumentFaceAnalysis = ({
             )}
 
             <div className="absolute bottom-2 left-2 px-2 py-0.5 rounded bg-slate-950/80 border border-slate-800 text-[10px] font-mono text-cyan-300">
-              {faceDetected ? "Portrait Cropped" : "No Face Detected"}
+              {faceDetected ? (resolvedCropUrl && !imgError ? "Portrait Cropped" : "Crop Error") : "No Face Detected"}
             </div>
           </div>
 

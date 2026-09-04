@@ -124,7 +124,7 @@ async def create_screening_upload(
         original_name = document.filename
         file_bytes = await document.read()
 
-        # Automatic PDF conversion: extract digital text and render page 1 to crisp JPEG
+        # Automatic PDF conversion: extract digital text and render pages
         is_pdf = file_bytes.startswith(b"%PDF") or original_name.lower().endswith(".pdf")
         if is_pdf:
             try:
@@ -155,9 +155,33 @@ async def create_screening_upload(
                     pf.write(file_bytes)
 
                 if len(pdf) > 0:
-                    rendered_page = pdf[0].render(scale=2.5).to_pil()
-                    rendered_page.convert("RGB").save(doc_path, format="JPEG", quality=95)
-                    print(f"[CONVERT] Successfully rendered PDF '{original_name}' (page 1) to JPEG: {doc_path}")
+                    best_page_img = None
+                    target_page_idx = 0
+                    # Check first 5 pages for embedded portrait
+                    for p_idx in range(min(5, len(pdf))):
+                        try:
+                            p_img = pdf[p_idx].render(scale=2.5).to_pil()
+                            temp_page_path = f"{doc_path}_page_{p_idx}.jpg"
+                            p_img.convert("RGB").save(temp_page_path, format="JPEG", quality=90)
+                            p_res = detect_and_crop_document_face(temp_page_path)
+                            if os.path.exists(temp_page_path):
+                                try:
+                                    os.remove(temp_page_path)
+                                except Exception:
+                                    pass
+                            if p_res.get("face_detected"):
+                                best_page_img = p_img
+                                target_page_idx = p_idx
+                                print(f"[CONVERT] Confirmed face portrait on PDF page {p_idx + 1}")
+                                break
+                        except Exception as p_err:
+                            logger.debug(f"PDF page {p_idx} render note: {p_err}")
+
+                    if best_page_img is None:
+                        best_page_img = pdf[0].render(scale=2.5).to_pil()
+                    
+                    best_page_img.convert("RGB").save(doc_path, format="JPEG", quality=95)
+                    print(f"[CONVERT] Successfully rendered PDF '{original_name}' (page {target_page_idx + 1}) to JPEG: {doc_path}")
                 else:
                     with open(doc_path, "wb") as f:
                         f.write(file_bytes)
@@ -411,93 +435,79 @@ def analyze_screening(
         face_crop_filename = f"{screening.screening_id}_face_crop.jpg"
         face_crop_path = str(DOCS_DIR / face_crop_filename)
 
-        doc_face_box_data = None
-        gemini_has_face = gemini_face.get("face_detected")
-        faces_detected_count = 1
-        multiple_faces_detected = False
-        is_anomaly = False
+        # Run robust two-stage local face & portrait extraction
+        local_face_res = detect_and_crop_document_face(
+            doc_image_path=doc_path,
+            normalized_box=norm_box,
+            output_crop_path=face_crop_path
+        )
 
-        if gemini_has_face is False or gemini_face.get("photo_status") == "No Face Detected":
-            doc_face_detected = False
-            faces_detected_count = 0
-            multiple_faces_detected = False
+        doc_face_detected = bool(local_face_res.get("face_detected", False))
+        faces_detected_count = local_face_res.get("faces_detected_count", 1 if doc_face_detected else 0)
+        multiple_faces_detected = bool(local_face_res.get("multiple_faces_detected", False) or (faces_detected_count > 1))
+        doc_face_quality = local_face_res.get("face_quality", "Good" if doc_face_detected else "Inconclusive")
+        photo_reg_detected = bool(doc_face_detected and local_face_res.get("photo_region_detected", True))
+        doc_face_box_data = local_face_res.get("box") if doc_face_detected else None
+
+        # Run forensic photo checks (ELA, boundary edge variance, texture)
+        photo_auth = {}
+        if doc_face_detected and face_crop_path and os.path.exists(face_crop_path):
+            try:
+                photo_auth = analyze_photo_authenticity(
+                    doc_image_path=doc_path,
+                    crop_image_path=face_crop_path,
+                    face_box=doc_face_box_data,
+                    gemini_forensics=gemini_face,
+                    face_detected=True
+                )
+            except Exception as ex:
+                logger.warning(f"Forensic photo authenticity check note: {ex}")
+
+        photo_risk = float(photo_auth.get("photo_authenticity_risk", 0.0))
+        raw_photo_st = str(gemini_face.get("photo_status") or gemini_face.get("status") or "").lower()
+        gemini_is_real = gemini_face.get("is_real_photo")
+
+        is_anomaly = (
+            gemini_is_real is False or
+            "fake" in raw_photo_st or
+            "tamper" in raw_photo_st or
+            "anomaly" in raw_photo_st or
+            "splic" in raw_photo_st or
+            photo_risk >= 70.0
+        )
+
+        if not doc_face_detected:
+            doc_face_st = "No Face Detected"
+            doc_face_expl = "No facial photograph detected in the uploaded document."
+            doc_face_conf = 0.95
+            doc_face_inds = []
             doc_face_quality = "Inconclusive"
             photo_reg_detected = False
-            doc_face_st = "No Face Detected"
-            doc_face_conf = float(gemini_face.get("confidence", 0.95))
-            doc_face_inds = []
-            doc_face_expl = "No facial photograph detected in the uploaded document."
             doc_face_box_data = None
-            local_face_res = {"face_detected": False, "box": None}
             if os.path.exists(face_crop_path):
                 try:
                     os.remove(face_crop_path)
                 except Exception:
                     pass
+        elif multiple_faces_detected:
+            doc_face_st = "Fake / Tampered Photo"
+            doc_face_conf = 0.96
+            doc_face_inds = [f"Multiple facial portraits detected ({faces_detected_count} faces)", "Breach of ICAO single-photograph credential requirement"]
+            doc_face_expl = f"MULTIPLE FACES DETECTED ({faces_detected_count} faces found). Official identity documents must contain only a single primary photograph."
+            doc_face_quality = "Multiple Faces Detected"
+        elif is_anomaly:
+            doc_face_st = "Fake / Tampered Photo"
+            doc_face_conf = float(max(gemini_face.get("confidence", 0.95), round(photo_risk / 100.0, 2) if photo_risk > 0 else 0.94))
+            doc_face_inds = gemini_face.get("indicators") or ["Potential AI generation or synthetic portrait", "Forensic boundary/substrate anomaly"]
+            doc_face_expl = gemini_face.get("explanation") or "The portrait shows forensic markers of manipulation, digital splicing, or synthetic generation."
+            gemini_face["photo_status"] = "Fake / Tampered Photo"
+            gemini_face["is_real_photo"] = False
+            gemini_face["status"] = "Anomaly Detected"
         else:
-            local_face_res = detect_and_crop_document_face(
-                doc_image_path=doc_path,
-                normalized_box=norm_box,
-                output_crop_path=face_crop_path
-            )
-            doc_face_detected = bool(local_face_res.get("face_detected", False))
-            faces_detected_count = local_face_res.get("faces_detected_count", 1 if doc_face_detected else 0)
-            multiple_faces_detected = bool(local_face_res.get("multiple_faces_detected", False) or gemini_face.get("multiple_faces_detected", False) or (faces_detected_count > 1))
-            doc_face_quality = local_face_res.get("face_quality") or gemini_face.get("quality") or ("Good" if doc_face_detected else "Inconclusive")
-            photo_reg_detected = bool(doc_face_detected and (gemini_face.get("photo_region_detected", True) or local_face_res.get("photo_region_detected", True)))
-            
-            doc_face_box_data = local_face_res.get("box") if doc_face_detected else None
-
-            # Run forensic photo checks (ELA, boundary edge variance, texture)
-            photo_auth = {}
-            if doc_face_detected and face_crop_path and os.path.exists(face_crop_path):
-                try:
-                    photo_auth = analyze_photo_authenticity(
-                        doc_image_path=doc_path,
-                        crop_image_path=face_crop_path,
-                        face_box=doc_face_box_data,
-                        gemini_forensics=gemini_face,
-                        face_detected=True
-                    )
-                except Exception as ex:
-                    logger.warning(f"Forensic photo authenticity check note: {ex}")
-
-            photo_risk = float(photo_auth.get("photo_authenticity_risk", 0.0))
-            raw_photo_st = str(gemini_face.get("photo_status") or gemini_face.get("status") or "").lower()
-            gemini_is_real = gemini_face.get("is_real_photo")
-
-            if not doc_face_detected:
-                doc_face_st = "No Face Detected"
-                doc_face_expl = "No facial photograph detected in the uploaded document."
-                doc_face_conf = 0.95
-                doc_face_inds = []
-                doc_face_quality = "Inconclusive"
-                photo_reg_detected = False
-                doc_face_box_data = None
-                if os.path.exists(face_crop_path):
-                    try:
-                        os.remove(face_crop_path)
-                    except Exception:
-                        pass
-            elif multiple_faces_detected:
-                doc_face_st = "Fake / Tampered Photo"
-                doc_face_conf = 0.96
-                doc_face_inds = [f"Multiple facial portraits detected ({faces_detected_count} faces)", "Breach of ICAO single-photograph credential requirement"]
-                doc_face_expl = f"MULTIPLE FACES DETECTED ({faces_detected_count} faces found). Official identity documents must contain only a single primary photograph."
-                doc_face_quality = "Multiple Faces Detected"
-            elif is_anomaly:
-                doc_face_st = "Fake / Tampered Photo"
-                doc_face_conf = float(max(gemini_face.get("confidence", 0.95), round(photo_risk / 100.0, 2) if photo_risk > 0 else 0.94))
-                doc_face_inds = gemini_face.get("indicators") or ["Potential AI generation or synthetic portrait", "Forensic boundary/substrate anomaly"]
-                doc_face_expl = gemini_face.get("explanation") or "The portrait shows forensic markers of manipulation, digital splicing, or synthetic generation."
-                gemini_face["photo_status"] = "Fake / Tampered Photo"
-                gemini_face["is_real_photo"] = False
-                gemini_face["status"] = "Anomaly Detected"
-            else:
-                doc_face_st = "Real Photo"
-                doc_face_conf = float(gemini_face.get("confidence", 0.95))
-                doc_face_inds = gemini_face.get("indicators", ["Consistent photographic substrate", "Natural lighting and contours"])
-                doc_face_expl = gemini_face.get("explanation") or "The document portrait is clear and verified authentic with no signs of manipulation."
+            doc_face_st = "Real Photo"
+            doc_face_conf = float(gemini_face.get("confidence", 0.95))
+            doc_face_inds = gemini_face.get("indicators", ["Consistent photographic substrate", "Natural lighting and contours"])
+            doc_face_expl = gemini_face.get("explanation") or "The document portrait is clear and verified authentic with no signs of manipulation."
 
         # Optional 1:1 Face Verification against presented selfie/comparison image
         if screening.presented_face_path and os.path.exists(screening.presented_face_path):
@@ -850,6 +860,8 @@ def get_screening_detail(
         
         # Document Face Analysis (Always run on ID's embedded face)
         "face_detected": is_face_detected,
+        "faces_detected_count": screening.faces_detected_count if screening.faces_detected_count is not None else (1 if is_face_detected else 0),
+        "multiple_faces_detected": bool(screening.multiple_faces_detected),
         "face_quality": screening.face_quality or ("Good" if is_face_detected else "Inconclusive"),
         "photo_region_detected": bool(screening.photo_region_detected) if is_face_detected else False,
         "doc_face_status": (screening.doc_face_status or screening.photo_forensics_status or "Real Photo") if is_face_detected else "No Face Detected",

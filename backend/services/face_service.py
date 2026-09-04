@@ -1,12 +1,287 @@
 import os
 import hashlib
 import logging
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, List
 from PIL import Image
 import numpy as np
 import cv2
 
 logger = logging.getLogger(__name__)
+
+# Base directory for bundled model weights
+MODELS_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "models"))
+YUNET_MODEL_PATH = os.path.join(MODELS_DIR, "face_detection_yunet_2023mar.onnx")
+RFB_MODEL_PATH = os.path.join(MODELS_DIR, "version-RFB-320.onnx")
+
+_yunet_detector_cache = None
+_rfb_net_cache = None
+
+def _get_yunet_detector():
+    global _yunet_detector_cache
+    if _yunet_detector_cache is None and os.path.exists(YUNET_MODEL_PATH) and hasattr(cv2, "FaceDetectorYN"):
+        try:
+            _yunet_detector_cache = cv2.FaceDetectorYN.create(
+                YUNET_MODEL_PATH,
+                "",
+                (320, 320),
+                score_threshold=0.28,
+                nms_threshold=0.3,
+                top_k=100
+            )
+            logger.info(f"[FACE_SERVICE] Loaded YuNet face detector from {YUNET_MODEL_PATH}")
+        except Exception as ex:
+            logger.warning(f"[FACE_SERVICE] Could not load YuNet ONNX model: {ex}")
+    return _yunet_detector_cache
+
+def _get_rfb_net():
+    global _rfb_net_cache
+    if _rfb_net_cache is None and os.path.exists(RFB_MODEL_PATH):
+        try:
+            _rfb_net_cache = cv2.dnn.readNetFromONNX(RFB_MODEL_PATH)
+            logger.info(f"[FACE_SERVICE] Loaded RFB-320 face detector from {RFB_MODEL_PATH}")
+        except Exception as ex:
+            logger.warning(f"[FACE_SERVICE] Could not load RFB-320 ONNX model: {ex}")
+    return _rfb_net_cache
+
+def _validate_facial_landmarks(fc: np.ndarray) -> bool:
+    """
+    Validates topological landmark geometry of detected human face:
+    fc: [x, y, w, h, x_re, y_re, x_le, y_le, x_nt, y_nt, x_rcm, y_rcm, x_lcm, y_lcm, score]
+    Ensures that detected box is a genuine human face with correct eye-nose-mouth arrangement,
+    and not text, stamps, seals, or random geometric shapes.
+    """
+    if fc is None or len(fc) < 15:
+        return True
+    try:
+        fw, fh = float(fc[2]), float(fc[3])
+        if fw < 10 or fh < 10:
+            return False
+
+        x_re, y_re = float(fc[4]), float(fc[5])    # right eye
+        x_le, y_le = float(fc[6]), float(fc[7])    # left eye
+        x_nt, y_nt = float(fc[8]), float(fc[9])    # nose tip
+        x_rcm, y_rcm = float(fc[10]), float(fc[11]) # right mouth corner
+        x_lcm, y_lcm = float(fc[12]), float(fc[13]) # left mouth corner
+
+        # 1. Eye separation distance
+        eye_dist = float(np.sqrt((x_le - x_re)**2 + (y_le - y_re)**2))
+        if eye_dist < 0.08 * fw or eye_dist > 0.95 * fw:
+            return False
+
+        # 2. Eye level must be above mouth level
+        avg_eye_y = (y_re + y_le) / 2.0
+        avg_mouth_y = (y_rcm + y_lcm) / 2.0
+        if avg_mouth_y <= (avg_eye_y + 0.04 * fh):
+            return False
+
+        # 3. Nose tip should be between eyes and mouth vertically
+        if y_nt < (avg_eye_y - 0.20 * fh) or y_nt > (avg_mouth_y + 0.20 * fh):
+            return False
+
+        return True
+    except Exception:
+        return True
+
+def _detect_faces_rfb(img_bgr: np.ndarray, conf_thresh: float = 0.65) -> List[Tuple[float, Tuple[int, int, int, int]]]:
+    """Secondary detector: Ultra-Light RFB-320 ONNX detector."""
+    net = _get_rfb_net()
+    if net is None:
+        return []
+    try:
+        h, w = img_bgr.shape[:2]
+        if w < 20 or h < 20:
+            return []
+        img_rgb = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2RGB)
+        img_resized = cv2.resize(img_rgb, (320, 240))
+        blob = cv2.dnn.blobFromImage(img_resized, 1.0 / 128.0, (320, 240), (127.0, 127.0, 127.0), swapRB=False)
+        net.setInput(blob)
+        scores, boxes = net.forward(['scores', 'boxes'])
+        boxes = boxes[0]
+        scores = scores[0]
+        
+        detected = []
+        for i in range(boxes.shape[0]):
+            score = float(scores[i, 1])
+            if score >= conf_thresh:
+                box = boxes[i]
+                x1 = max(0, int(box[0] * w))
+                y1 = max(0, int(box[1] * h))
+                x2 = min(w, int(box[2] * w))
+                y2 = min(h, int(box[3] * h))
+                bw = x2 - x1
+                bh = y2 - y1
+                if bw >= 12 and bh >= 12:
+                    detected.append((score, (x1, y1, bw, bh)))
+        return detected
+    except Exception as ex:
+        logger.debug(f"[FACE_SERVICE] RFB detection note: {ex}")
+        return []
+
+def _detect_faces_yunet(img_bgr: np.ndarray, score_thresh: float = 0.28) -> List[Tuple[float, Tuple[int, int, int, int]]]:
+    """Primary detector: OpenCV YuNet (FaceDetectorYN) with facial landmark verification."""
+    det = _get_yunet_detector()
+    if det is None:
+        return []
+    try:
+        h, w = img_bgr.shape[:2]
+        if w < 16 or h < 16:
+            return []
+        det.setInputSize((w, h))
+        det.setScoreThreshold(score_thresh)
+        ret, faces = det.detect(img_bgr)
+        if faces is None or len(faces) == 0:
+            return []
+        results = []
+        for fc in faces:
+            conf = float(fc[14])
+            if conf < score_thresh:
+                continue
+            if not _validate_facial_landmarks(fc):
+                continue
+            fx, fy, fw, fh = int(fc[0]), int(fc[1]), int(fc[2]), int(fc[3])
+            fx = max(0, fx)
+            fy = max(0, fy)
+            fw = min(w - fx, fw)
+            fh = min(h - fy, fh)
+            if fw >= 10 and fh >= 10:
+                results.append((conf, (fx, fy, fw, fh)))
+        return results
+    except Exception as ex:
+        logger.debug(f"[FACE_SERVICE] YuNet detection note: {ex}")
+        return []
+
+def _is_qr_or_barcode(crop_bgr: np.ndarray) -> bool:
+    """Checks whether a given crop is a QR code or barcode to avoid false positive crops."""
+    if crop_bgr is None or crop_bgr.size == 0:
+        return False
+    try:
+        h, w = crop_bgr.shape[:2]
+        if w < 20 or h < 20:
+            return False
+        if hasattr(cv2, "QRCodeDetector"):
+            qr_det = cv2.QRCodeDetector()
+            ret_val, decoded_info, points, _ = qr_det.detectAndDecodeMulti(crop_bgr)
+            if ret_val:
+                return True
+        if hasattr(cv2, "barcode_BarcodeDetector"):
+            try:
+                bc_det = cv2.barcode_BarcodeDetector()
+                ret_bc, decoded_bc, _, _ = bc_det.detectAndDecode(crop_bgr)
+                if ret_bc and any(bool(b) for b in decoded_bc):
+                    return True
+            except Exception:
+                pass
+    except Exception:
+        pass
+    return False
+
+def _enhance_contrast(img_bgr: np.ndarray) -> np.ndarray:
+    """Apply CLAHE for dark/flat portraits."""
+    try:
+        lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+        l, a, b = cv2.split(lab)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        cl = clahe.apply(l)
+        return cv2.cvtColor(cv2.merge((cl, a, b)), cv2.COLOR_LAB2BGR)
+    except Exception:
+        return img_bgr
+
+def _propose_candidate_regions(img_bgr: np.ndarray, ai_box_coords: Optional[Tuple[int, int, int, int]] = None) -> List[Tuple[int, int, int, int]]:
+    """Proposes candidate portrait/photo regions from AI box, card quadrants, and visual contours."""
+    h, w = img_bgr.shape[:2]
+    candidates = []
+
+    if ai_box_coords:
+        candidates.append(ai_box_coords)
+
+    # Standard Identity Document Photo Quadrants (Aadhaar, Passport, PAN, Driver License)
+    candidates.append((int(0.02 * w), int(0.10 * h), int(0.45 * w), int(0.85 * h)))
+    candidates.append((int(0.04 * w), int(0.18 * h), int(0.38 * w), int(0.65 * h)))
+    candidates.append((int(0.52 * w), int(0.10 * h), int(0.46 * w), int(0.85 * h)))
+    candidates.append((int(0.58 * w), int(0.18 * h), int(0.38 * w), int(0.65 * h)))
+    candidates.append((int(0.03 * w), int(0.05 * h), int(0.40 * w), int(0.50 * h)))
+    candidates.append((int(0.57 * w), int(0.05 * h), int(0.40 * w), int(0.50 * h)))
+    candidates.append((int(0.02 * w), int(0.45 * h), int(0.50 * w), int(0.52 * h)))
+    candidates.append((int(0.48 * w), int(0.45 * h), int(0.50 * w), int(0.52 * h)))
+
+    # Structural rectangular contour detection for photo boxes
+    try:
+        gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
+        blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+        edges = cv2.Canny(blurred, 40, 140)
+        contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+        for c in contours:
+            x, y, cw, ch = cv2.boundingRect(c)
+            aspect = ch / max(1, cw)
+            area_ratio = (cw * ch) / float(max(1, w * h))
+            if 0.02 <= area_ratio <= 0.45 and 0.75 <= aspect <= 1.85:
+                candidates.append((x, y, cw, ch))
+    except Exception as ex:
+        logger.debug(f"[FACE_SERVICE] Contour candidate proposal note: {ex}")
+
+    unique_candidates = []
+    for cand in candidates:
+        cx, cy, cw, ch = cand
+        if cw < 25 or ch < 25:
+            continue
+        is_dup = False
+        for ux, uy, uw, uh in unique_candidates:
+            if abs(cx - ux) < 20 and abs(cy - uy) < 20 and abs(cw - uw) < 30 and abs(ch - uh) < 30:
+                is_dup = True
+                break
+        if not is_dup:
+            unique_candidates.append(cand)
+
+    return unique_candidates
+
+def _compute_iou(boxA: Tuple[int, int, int, int], boxB: Tuple[int, int, int, int]) -> float:
+    """Calculates Intersection-Over-Union for (x, y, w, h) bounding boxes."""
+    xA = max(boxA[0], boxB[0])
+    yA = max(boxA[1], boxB[1])
+    xB = min(boxA[0] + boxA[2], boxB[0] + boxB[2])
+    yB = min(boxA[1] + boxA[3], boxB[1] + boxB[3])
+
+    interW = max(0, xB - xA)
+    interH = max(0, yB - yA)
+    interArea = interW * interH
+
+    boxAArea = boxA[2] * boxA[3]
+    boxBArea = boxB[2] * boxB[3]
+    unionArea = float(boxAArea + boxBArea - interArea)
+
+    if unionArea <= 0:
+        return 0.0
+    return interArea / unionArea
+
+def _expand_face_to_portrait_region(
+    img_w: int,
+    img_h: int,
+    face_box: Tuple[int, int, int, int],
+    containing_region: Optional[Tuple[int, int, int, int]] = None
+) -> Tuple[int, int, int, int]:
+    """Expands a tightly detected human face box into a natural document portrait photograph crop."""
+    fx, fy, fw, fh = face_box
+
+    if containing_region:
+        cx, cy, cw, ch = containing_region
+        if cw >= fw and ch >= fh and (cw * ch) <= (fw * fh * 4.5):
+            return (
+                max(0, cx),
+                max(0, cy),
+                min(img_w - max(0, cx), cw),
+                min(img_h - max(0, cy), ch)
+            )
+
+    pad_top = int(fh * 0.35)
+    pad_bottom = int(fh * 0.40)
+    pad_sides = int(fw * 0.28)
+
+    x1 = max(0, fx - pad_sides)
+    y1 = max(0, fy - pad_top)
+    x2 = min(img_w, fx + fw + pad_sides)
+    y2 = min(img_h, fy + fh + pad_bottom)
+
+    return (x1, y1, x2 - x1, y2 - y1)
 
 def detect_and_crop_document_face(
     doc_image_path: str,
@@ -14,32 +289,36 @@ def detect_and_crop_document_face(
     output_crop_path: Optional[str] = None
 ) -> Dict[str, Any]:
     """
-    Local Computer Vision & AI Bounding-Box Face & Photo Region Extraction:
-    1. Extracts the photograph/face region inside the ID document using normalized box [ymin, xmin, ymax, xmax].
-    2. Crops and saves the face image.
-    3. Calculates physical image quality metrics (blur variance, brightness, contrast, size).
+    Two-Stage Human Face Detection & Portrait Extraction Engine:
+    ----------------------------------------------------------
+    Stage 1: Candidate Portrait Region Localization (Path B) + Full-Page Multi-scale Search (Path A)
+    Stage 2: Strict Human Face Detection & Landmark Verification
+    Stage 3: Portrait Framing, Crop Verification & Physical Quality Forensics
     """
     if not doc_image_path or not os.path.exists(doc_image_path):
-        logger.warning(f"[FACE_ANALYSIS] Document image path not found on disk: {doc_image_path}")
+        logger.warning(f"[FACE_ANALYSIS] Document image path not found: {doc_image_path}")
         return {
             "face_detected": False,
-            "face_quality": "Inconclusive",
+            "face_crop_available": False,
             "photo_region_detected": False,
+            "faces_detected_count": 0,
+            "multiple_faces_detected": False,
+            "all_face_boxes": [],
+            "face_quality": "Inconclusive",
             "box": None,
             "crop_path": None,
-            "reason": "No facial photograph detected in the uploaded document."
+            "reason": "Document image file not accessible."
         }
 
     try:
-        # Load image via PIL for reliable dimension handling across formats
         pil_img = Image.open(doc_image_path).convert("RGB")
         w_img, h_img = pil_img.size
-        logger.info(f"[FACE_ANALYSIS] Analyzing image: {os.path.basename(doc_image_path)} ({w_img}x{h_img}px)")
+        img_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-        # 1. Determine bounding box from AI normalized_box if provided
-        box_coords = None
-        has_ai_box = False
+        logger.info(f"[FACE_ANALYSIS] Processing document: {os.path.basename(doc_image_path)} ({w_img}x{h_img}px)")
 
+        # Parse normalized_box if provided by Gemini / Layout
+        ai_box_coords = None
         if normalized_box:
             ymin, xmin, ymax, xmax = 0.0, 0.0, 0.0, 0.0
             if isinstance(normalized_box, (list, tuple)) and len(normalized_box) == 4:
@@ -50,7 +329,6 @@ def detect_and_crop_document_face(
                 ymax = float(normalized_box.get("ymax", 0))
                 xmax = float(normalized_box.get("xmax", 0))
 
-            # Normalize coordinates if returned on 0-1000 scale
             if ymax > 1.0 or xmax > 1.0:
                 ymin /= 1000.0
                 xmin /= 1000.0
@@ -58,66 +336,113 @@ def detect_and_crop_document_face(
                 xmax /= 1000.0
 
             if ymax > ymin and xmax > xmin and (ymax - ymin) > 0.03 and (xmax - xmin) > 0.03:
-                # Add gentle 4% margin for natural portrait context
-                pad_y = (ymax - ymin) * 0.04
-                pad_x = (xmax - xmin) * 0.04
-                y1 = max(0, int((ymin - pad_y) * h_img))
-                x1 = max(0, int((xmin - pad_x) * w_img))
-                y2 = min(h_img, int((ymax + pad_y) * h_img))
-                x2 = min(w_img, int((xmax + pad_x) * w_img))
-                box_coords = (x1, y1, x2 - x1, y2 - y1, ymin, xmin, ymax, xmax)
-                has_ai_box = True
-                logger.info(f"[FACE_ANALYSIS] Using AI bounding box: [{ymin:.3f}, {xmin:.3f}, {ymax:.3f}, {xmax:.3f}] -> ({x1},{y1},{x2},{y2})")
+                ax1 = max(0, int(xmin * w_img))
+                ay1 = max(0, int(ymin * h_img))
+                ax2 = min(w_img, int(xmax * w_img))
+                ay2 = min(h_img, int(ymax * h_img))
+                if (ax2 - ax1) >= 20 and (ay2 - ay1) >= 20:
+                    ai_box_coords = (ax1, ay1, ax2 - ax1, ay2 - ay1)
 
-        detected_faces_list = []
-        if box_coords:
-            detected_faces_list.append(box_coords)
+        validated_detections = []
 
-        # 2. Multi-face / portrait detection using OpenCV Haar Cascade
-        img_np = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
-        gray = cv2.cvtColor(img_np, cv2.COLOR_BGR2GRAY)
+        # -------------------------------------------------------------
+        # PATH B: TEST PROPOSED CANDIDATE PORTRAIT REGIONS FIRST
+        # -------------------------------------------------------------
+        candidates = _propose_candidate_regions(img_bgr, ai_box_coords=ai_box_coords)
+        for (cx, cy, cw, ch) in candidates:
+            pad_x = int(cw * 0.12)
+            pad_y = int(ch * 0.12)
+            x1 = max(0, cx - pad_x)
+            y1 = max(0, cy - pad_y)
+            x2 = min(w_img, cx + cw + pad_x)
+            y2 = min(h_img, cy + ch + pad_y)
+            cand_crop = img_bgr[y1:y2, x1:x2]
+            if cand_crop.size == 0 or cand_crop.shape[0] < 20 or cand_crop.shape[1] < 20:
+                continue
 
-        if not has_ai_box:
-            # Check if CascadeClassifier is available (OpenCV Haar Cascade)
-            if hasattr(cv2, "CascadeClassifier"):
-                try:
-                    haardata = getattr(cv2.data, 'haarcascades', '') if hasattr(cv2, 'data') else ''
-                    cascade_path = os.path.join(haardata, 'haarcascade_frontalface_default.xml')
-                    if os.path.exists(cascade_path):
-                        face_cascade = cv2.CascadeClassifier(cascade_path)
-                        faces = face_cascade.detectMultiScale(
-                            gray,
-                            scaleFactor=1.1,
-                            minNeighbors=5,
-                            minSize=(int(w_img * 0.08), int(h_img * 0.10))
-                        )
-                        for (fx, fy, fw, fh) in faces:
-                            if fw >= 0.06 * w_img and fh >= 0.08 * h_img:
-                                pad_fy = int(fh * 0.10)
-                                pad_fx = int(fw * 0.10)
-                                x1 = max(0, fx - pad_fx)
-                                y1 = max(0, fy - pad_fy)
-                                x2 = min(w_img, fx + fw + pad_fx)
-                                y2 = min(h_img, fy + fh + pad_fy)
-                                detected_faces_list.append((
-                                    x1, y1, x2 - x1, y2 - y1,
-                                    round(y1 / h_img, 3), round(x1 / w_img, 3),
-                                    round(y2 / h_img, 3), round(x2 / w_img, 3)
-                                ))
-                        if detected_faces_list:
-                            logger.info(f"[FACE_ANALYSIS] OpenCV Haar Cascade confirmed {len(detected_faces_list)} human face(s).")
-                except Exception as ex:
-                    logger.warning(f"[FACE_ANALYSIS] Haar cascade detection note: {ex}")
+            if _is_qr_or_barcode(cand_crop):
+                logger.debug(f"[FACE_ANALYSIS] Candidate at ({x1},{y1}) rejected: QR/Barcode detected.")
+                continue
 
-        if not box_coords and detected_faces_list:
-            # Sort by area descending
-            detected_faces_list.sort(key=lambda b: b[2] * b[3], reverse=True)
-            box_coords = detected_faces_list[0]
+            cand_faces = _detect_faces_yunet(cand_crop, score_thresh=0.28)
+            if not cand_faces:
+                cand_enhanced = _enhance_contrast(cand_crop)
+                cand_faces = _detect_faces_yunet(cand_enhanced, score_thresh=0.25)
+            if not cand_faces:
+                cand_faces = _detect_faces_rfb(cand_crop, conf_thresh=0.65)
 
-        # STRICT RULE: If no real human face was confirmed by AI or Haar Cascade, do NOT use non-face contours!
-        if not box_coords:
-            logger.info("[FACE_ANALYSIS] No human face detected in document. Returning Inconclusive.")
-            # Remove any stale crop file if present
+            for (score, (lfx, lfy, lfw, lfh)) in cand_faces:
+                orig_fx = x1 + lfx
+                orig_fy = y1 + lfy
+                face_box = (orig_fx, orig_fy, lfw, lfh)
+                portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box, containing_region=(x1, y1, x2 - x1, y2 - y1))
+                validated_detections.append({
+                    "score": score,
+                    "face_box": face_box,
+                    "portrait_box": portrait_box,
+                    "source": "candidate_region"
+                })
+
+        # -------------------------------------------------------------
+        # PATH A: FULL-PAGE MULTI-SCALE DETECTION
+        # -------------------------------------------------------------
+        scales = [1.0, 1.5, 2.0, 0.75]
+        for scale in scales:
+            sw = int(w_img * scale)
+            sh = int(h_img * scale)
+            if sw < 80 or sh < 80 or sw > 4000 or sh > 4000:
+                continue
+            scaled_img = cv2.resize(img_bgr, (sw, sh), interpolation=cv2.INTER_LINEAR) if scale != 1.0 else img_bgr
+            scaled_faces = _detect_faces_yunet(scaled_img, score_thresh=0.28)
+            if not scaled_faces:
+                scaled_enhanced = _enhance_contrast(scaled_img)
+                scaled_faces = _detect_faces_yunet(scaled_enhanced, score_thresh=0.25)
+            if not scaled_faces and scale == 1.0:
+                scaled_faces = _detect_faces_rfb(scaled_img, conf_thresh=0.65)
+
+            for (score, (sfx, sfy, sfw, sfh)) in scaled_faces:
+                orig_fx = int(round(sfx / scale))
+                orig_fy = int(round(sfy / scale))
+                orig_fw = int(round(sfw / scale))
+                orig_fh = int(round(sfh / scale))
+                face_box = (orig_fx, orig_fy, orig_fw, orig_fh)
+                
+                crop_test = img_bgr[orig_fy:orig_fy+orig_fh, orig_fx:orig_fx+orig_fw]
+                if _is_qr_or_barcode(crop_test):
+                    continue
+
+                portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box)
+                validated_detections.append({
+                    "score": score,
+                    "face_box": face_box,
+                    "portrait_box": portrait_box,
+                    "source": f"full_page_scale_{scale}x"
+                })
+
+        # -------------------------------------------------------------
+        # MERGE & DEDUPLICATE DETECTIONS (NMS)
+        # -------------------------------------------------------------
+        validated_detections.sort(key=lambda d: d["score"], reverse=True)
+        unique_detections = []
+        for det in validated_detections:
+            f_box = det["face_box"]
+            is_dup = False
+            for u in unique_detections:
+                iou = _compute_iou(f_box, u["face_box"])
+                if iou > 0.40:
+                    is_dup = True
+                    break
+            if not is_dup:
+                unique_detections.append(det)
+
+        faces_count = len(unique_detections)
+        multiple_faces = faces_count > 1
+
+        # -------------------------------------------------------------
+        # STRICT ZERO-FACE RULE
+        # -------------------------------------------------------------
+        if faces_count == 0:
+            logger.info(f"[FACE_ANALYSIS] No human face detected in {os.path.basename(doc_image_path)}.")
             if output_crop_path and os.path.exists(output_crop_path):
                 try:
                     os.remove(output_crop_path)
@@ -125,109 +450,137 @@ def detect_and_crop_document_face(
                     pass
             return {
                 "face_detected": False,
+                "face_crop_available": False,
+                "photo_region_detected": False,
                 "faces_detected_count": 0,
                 "multiple_faces_detected": False,
                 "all_face_boxes": [],
                 "face_quality": "Inconclusive",
-                "photo_region_detected": False,
                 "box": None,
                 "crop_path": None,
                 "reason": "No human face was detected in the submitted document."
             }
 
-        # Filter duplicates or overlapping candidate boxes
-        faces_count = 1
-        multiple_faces = False
+        primary_det = unique_detections[0]
+        p_score = primary_det["score"]
+        px, py, pw, ph = primary_det["portrait_box"]
+        fx, fy, fw, fh = primary_det["face_box"]
 
-        x, y, w, h, ymin, xmin, ymax, xmax = box_coords
+        px = max(0, min(w_img - 1, px))
+        py = max(0, min(h_img - 1, py))
+        pw = max(15, min(w_img - px, pw))
+        ph = max(15, min(h_img - py, ph))
 
-        # Crop face / photo region with PIL
-        face_crop_pil = pil_img.crop((x, y, x + w, y + h))
-        if face_crop_pil.size[0] < 15 or face_crop_pil.size[1] < 15:
+        portrait_crop_pil = pil_img.crop((px, py, px + pw, py + ph))
+        c_w, c_h = portrait_crop_pil.size
+
+        if c_w < 15 or c_h < 15:
+            logger.warning("[FACE_ANALYSIS] Crop dimensions too small.")
             return {
                 "face_detected": False,
+                "face_crop_available": False,
+                "photo_region_detected": False,
                 "faces_detected_count": 0,
                 "multiple_faces_detected": False,
                 "all_face_boxes": [],
                 "face_quality": "Inconclusive",
-                "photo_region_detected": False,
                 "box": None,
                 "crop_path": None,
-                "reason": "No facial photograph detected in the uploaded document."
+                "reason": "Cropped face dimensions below minimum threshold."
             }
 
-        # 3. Compute Physical Quality Metrics
-        face_crop_np = cv2.cvtColor(np.array(face_crop_pil), cv2.COLOR_RGB2BGR)
-        gray_crop = cv2.cvtColor(face_crop_np, cv2.COLOR_BGR2GRAY)
+        final_crop_path = None
+        crop_save_success = False
+        if output_crop_path:
+            try:
+                os.makedirs(os.path.dirname(os.path.abspath(output_crop_path)), exist_ok=True)
+                portrait_crop_pil.save(output_crop_path, format="JPEG", quality=95)
+                if os.path.exists(output_crop_path) and os.path.getsize(output_crop_path) > 0:
+                    final_crop_path = output_crop_path
+                    crop_save_success = True
+                    logger.info(f"[FACE_ANALYSIS] Successfully saved face crop ({c_w}x{c_h}px) -> {output_crop_path}")
+            except Exception as save_err:
+                logger.error(f"[FACE_ANALYSIS] Error saving face crop: {save_err}")
+
+        crop_np = cv2.cvtColor(np.array(portrait_crop_pil), cv2.COLOR_RGB2BGR)
+        gray_crop = cv2.cvtColor(crop_np, cv2.COLOR_BGR2GRAY)
         blur_variance = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
         brightness = float(gray_crop.mean())
         contrast = float(gray_crop.std())
 
-        # Determine Face Quality
         if multiple_faces:
             quality = "Multiple Faces Detected"
-        elif blur_variance < 25.0 or brightness < 30.0 or contrast < 15.0:
+        elif blur_variance < 20.0 or brightness < 25.0 or contrast < 12.0:
             quality = "Fair"
+        elif blur_variance < 8.0:
+            quality = "Insufficient"
         else:
             quality = "Good"
 
-        # 4. Save cropped face image if path requested
-        final_crop_path = None
-        if output_crop_path:
-            os.makedirs(os.path.dirname(output_crop_path), exist_ok=True)
-            face_crop_pil.save(output_crop_path, quality=95)
-            final_crop_path = output_crop_path
+        norm_box = {
+            "x": int(px),
+            "y": int(py),
+            "width": int(pw),
+            "height": int(ph),
+            "ymin": float(round(py / float(h_img), 4)),
+            "xmin": float(round(px / float(w_img), 4)),
+            "ymax": float(round((py + ph) / float(h_img), 4)),
+            "xmax": float(round((px + pw) / float(w_img), 4))
+        }
 
-        all_boxes_formatted = [
-            {"x": box_coords[0], "y": box_coords[1], "width": box_coords[2], "height": box_coords[3], "ymin": box_coords[4], "xmin": box_coords[5], "ymax": box_coords[6], "xmax": box_coords[7]}
-        ]
+        all_boxes_formatted = []
+        for det in unique_detections:
+            ux, uy, uw, uh = det["portrait_box"]
+            all_boxes_formatted.append({
+                "x": int(ux), "y": int(uy), "width": int(uw), "height": int(uh),
+                "ymin": float(round(uy / float(h_img), 4)),
+                "xmin": float(round(ux / float(w_img), 4)),
+                "ymax": float(round((uy + uh) / float(h_img), 4)),
+                "xmax": float(round((ux + uw) / float(w_img), 4)),
+                "confidence": float(round(float(det["score"]), 3))
+            })
+
+        logger.info(
+            f"[FACE_ANALYSIS] Face detection SUCCESS: faces_count={faces_count}, "
+            f"confidence={float(p_score):.3f}, crop={c_w}x{c_h}px, quality={quality}"
+        )
 
         return {
             "face_detected": True,
-            "faces_detected_count": faces_count,
-            "multiple_faces_detected": multiple_faces,
+            "face_crop_available": crop_save_success or (output_crop_path is None),
+            "photo_region_detected": True,
+            "faces_detected_count": int(faces_count),
+            "multiple_faces_detected": bool(multiple_faces),
             "all_face_boxes": all_boxes_formatted,
             "face_quality": quality,
-            "photo_region_detected": True,
-            "box": {
-                "x": x,
-                "y": y,
-                "width": w,
-                "height": h,
-                "ymin": ymin,
-                "xmin": xmin,
-                "ymax": ymax,
-                "xmax": xmax
-            },
-            "blur_variance": round(blur_variance, 1),
-            "brightness": round(brightness, 1),
-            "contrast": round(contrast, 1),
+            "box": norm_box,
+            "confidence": float(round(float(p_score), 3)),
+            "blur_variance": float(round(float(blur_variance), 1)),
+            "brightness": float(round(float(brightness), 1)),
+            "contrast": float(round(float(contrast), 1)),
             "crop_path": final_crop_path
         }
 
     except Exception as e:
-        logger.warning(f"Local face detection note: {e}")
+        logger.error(f"[FACE_ANALYSIS] Unexpected error in detect_and_crop_document_face: {e}", exc_info=True)
         return {
             "face_detected": False,
+            "face_crop_available": False,
+            "photo_region_detected": False,
             "faces_detected_count": 0,
             "multiple_faces_detected": False,
             "all_face_boxes": [],
             "face_quality": "Inconclusive",
-            "photo_region_detected": False,
             "box": None,
             "crop_path": None,
-            "reason": "No facial photograph detected in the uploaded document."
+            "reason": f"Face analysis technical exception: {str(e)}"
         }
 
 def compute_face_comparison_similarity(
     doc_crop_path: str,
     presented_face_path: str
 ) -> Dict[str, Any]:
-    """
-    Real 1:1 Facial Verification Model (OpenCV Normalized Histogram & Feature Correlation):
-    Calculates genuine mathematical similarity between document photo and comparison image.
-    Does NOT allow Gemini to invent the percentage.
-    """
+    """1:1 Facial Verification Model (OpenCV Normalized Histogram & Feature Correlation)."""
     if not os.path.exists(doc_crop_path) or not os.path.exists(presented_face_path):
         return {
             "comparison_image_provided": False,
@@ -248,32 +601,26 @@ def compute_face_comparison_similarity(
                 "explanation": "Could not decode face images for biometric matching."
             }
 
-        # Normalize resolution
         img1_res = cv2.resize(img1, (128, 128))
         img2_res = cv2.resize(img2, (128, 128))
 
-        # Convert to HSV color space for lighting-invariant chromatic matching
         hsv1 = cv2.cvtColor(img1_res, cv2.COLOR_BGR2HSV)
         hsv2 = cv2.cvtColor(img2_res, cv2.COLOR_BGR2HSV)
 
-        # Calculate 2D Hue-Saturation Histograms
         hist1 = cv2.calcHist([hsv1], [0, 1], None, [32, 32], [0, 180, 0, 256])
         hist2 = cv2.calcHist([hsv2], [0, 1], None, [32, 32], [0, 180, 0, 256])
         cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
         cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
 
-        # Correlation metric (-1 to 1)
         corr = float(cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL))
 
-        # Structural intensity correlation
         g1 = cv2.cvtColor(img1_res, cv2.COLOR_BGR2GRAY)
         g2 = cv2.cvtColor(img2_res, cv2.COLOR_BGR2GRAY)
         diff = np.abs(g1.astype(np.float32) - g2.astype(np.float32)).mean()
         struct_sim = max(0.0, 1.0 - (diff / 128.0))
 
-        # Combined similarity percentage (bounded 25% - 98%)
-        raw_sim = (max(0.0, corr) * 0.6 + struct_sim * 0.4)
-        sim_pct = round(min(96.8, max(28.0, 45.0 + raw_sim * 50.0)), 1)
+        raw_sim = float(max(0.0, corr) * 0.6 + struct_sim * 0.4)
+        sim_pct = float(round(min(96.8, max(28.0, 45.0 + raw_sim * 50.0)), 1))
 
         status = "Likely Match" if sim_pct >= 75.0 else "Review Required"
 
@@ -300,21 +647,7 @@ def analyze_photo_authenticity(
     gemini_forensics: Optional[Dict[str, Any]] = None,
     face_detected: bool = True
 ) -> Dict[str, Any]:
-    """
-    Automatic Face Photo Authenticity Analysis (Without comparison image):
-    Analyzes the portrait embedded inside the document across 6 forensic checks:
-    1. Photo replacement
-    2. Photo-region editing
-    3. Copy/paste & splicing artifacts
-    4. Unusual boundaries & edge discontinuities
-    5. Inconsistent compression/texture (via Error Level Analysis)
-    6. Synthetic / AI-manipulated appearance
-
-    Generates dynamic Photo Authenticity Risk % (0-100) and Assessment:
-    - 0–29%   -> LIKELY ORIGINAL
-    - 30–69%  -> INCONCLUSIVE / MANUAL REVIEW
-    - 70–100% -> POTENTIALLY FAKE / MANIPULATED
-    """
+    """Automatic Face Photo Authenticity Analysis (Without comparison image)."""
     if not face_detected or not crop_image_path or not os.path.exists(crop_image_path):
         return {
             "document_photo_extracted": False,
@@ -340,28 +673,23 @@ def analyze_photo_authenticity(
 
         h_c, w_c = crop.shape[:2]
 
-        # 1. Error Level Analysis (ELA) - Compression Consistency
         _, enc = cv2.imencode('.jpg', crop, [int(cv2.IMWRITE_JPEG_QUALITY), 90])
         recomp = cv2.imdecode(enc, cv2.IMREAD_COLOR)
         ela_diff = cv2.absdiff(crop, recomp)
         ela_mean = float(np.mean(ela_diff))
         ela_std = float(np.std(ela_diff))
 
-        # 2. Laplacian Blur & Texture Variance
         gray_crop = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
         blur_var = float(cv2.Laplacian(gray_crop, cv2.CV_64F).var())
 
-        # 3. Boundary & Edge Discontinuity Check
         sobel_x = cv2.Sobel(gray_crop, cv2.CV_64F, 1, 0, ksize=3)
         sobel_y = cv2.Sobel(gray_crop, cv2.CV_64F, 0, 1, ksize=3)
         edge_mag = float(np.sqrt(sobel_x**2 + sobel_y**2).mean())
 
-        # 4. Skin Tone & Color Histogram Analysis
         ycrcb = cv2.cvtColor(crop, cv2.COLOR_BGR2YCrCb)
         skin_mask = cv2.inRange(ycrcb, np.array([0, 133, 77]), np.array([255, 173, 127]))
         skin_ratio = float(np.count_nonzero(skin_mask)) / float(max(1, h_c * w_c))
 
-        # 5. Gemini multimodal visual reasoning integration
         gf = gemini_forensics or {}
         g_rep = bool(gf.get("photo_replacement_detected", False))
         g_edit = bool(gf.get("photo_editing_detected", False))
@@ -370,7 +698,6 @@ def analyze_photo_authenticity(
         g_comp = bool(gf.get("compression_texture_inconsistency", False))
         g_synth = bool(gf.get("synthetic_appearance", False))
 
-        # Determine individual forensic check findings
         check_replacement = {
             "detected": g_rep,
             "status": "Warning" if g_rep else "Pass",
@@ -412,13 +739,10 @@ def analyze_photo_authenticity(
             "explanation": "Synthetic or generative face generation artifacts detected." if is_synthetic else "Facial skin microtexture, natural pore noise, and optical reflections verified."
         }
 
-        # Calculate mathematical risk score (0-100%)
-        # Clean baseline ID photo: 12.0 - 18.0%
         base_risk = 14.0 + float((h_c * w_c) % 5)
         risk = base_risk
 
         if blur_var < 30.0:
-            # Low clarity/blurred document photograph
             risk = max(risk, 42.0)
         
         if check_replacement["detected"]:
@@ -436,7 +760,6 @@ def analyze_photo_authenticity(
 
         risk = round(min(98.5, max(8.0, risk)), 1)
 
-        # Map to standard risk tiers
         if risk < 30.0:
             assessment = "LIKELY ORIGINAL"
         elif risk < 70.0:
@@ -510,7 +833,6 @@ def verify_face_similarity(
         "explanation": comp_res.get("explanation")
     }
 
-
 def check_multiple_identities(
     db: Any,
     current_screening_id: int,
@@ -519,23 +841,17 @@ def check_multiple_identities(
     doc_crop_path: Optional[str] = None,
     doc_filename: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    Module 4: Multiple Identities Used by the Same Person Check
-    Scans past checkpoint screenings and alias registries to detect if the same biometric
-    face has been presented under different names or multiple document numbers.
-    """
+    """Multiple Identities Used by the Same Person Check."""
     conflicts = []
     c_name = (current_person_name or "").strip().upper()
     c_doc = (current_doc_number or "").strip().upper()
     fname = (doc_filename or "").strip().lower()
 
-    # 1. Specimen / Filename check for explicit multiple identity test specimens
     if any(k in fname for k in ["multi_id", "alias", "duplicate", "multiple_identities"]):
         conflicts.append(
             "CRITICAL BIOMETRIC DEDUPLICATION ALERT: Facial biometric embedding matches pre-existing border record under alternate identity 'Elena Rostova' (Document #B8842109). Multiple identity usage confirmed."
         )
 
-    # 2. Known Border Multi-Identity Persona Registry
     KNOWN_MULTI_ALIASES = [
         {"name": "ELENA ROSTOVA", "alias": "ALEXANDRA VOLKOV", "doc": "B8842109"},
         {"name": "VIKRAM MALHOTRA", "alias": "RAJESH KHANNA", "doc": "P7821094"},
@@ -556,7 +872,6 @@ def check_multiple_identities(
             )
             break
 
-    # 3. Cross-Database Biometric Deduplication (Compare face crop against all other database records)
     if db and doc_crop_path and os.path.exists(doc_crop_path):
         try:
             from backend.models import Screening
@@ -595,5 +910,3 @@ def check_multiple_identities(
             "status": "Passed",
             "details": ["Biometric cross-check clean: No duplicate identity records found across border screening database."]
         }
-
-
