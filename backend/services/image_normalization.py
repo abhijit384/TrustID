@@ -66,42 +66,46 @@ def normalize_image_orientation(image_path: str) -> Tuple[str, int]:
             
             img_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
-        # 2. Test 4 rotations: 0°, 90° CW (rot 270 CCW), 180°, 270° CW (rot 90 CCW)
-        rot_angles = [0, 90, 180, 270]
-        rot_imgs = {
-            0: img_bgr,
-            90: cv2.rotate(img_bgr, cv2.ROTATE_90_CLOCKWISE),
-            180: cv2.rotate(img_bgr, cv2.ROTATE_180),
-            270: cv2.rotate(img_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
-        }
-
-        face_scores = {}
-        text_scores = {}
-
-        for ang, r_img in rot_imgs.items():
-            f_score = _detect_upright_face_confidence(r_img)
-            face_scores[ang] = f_score
-            t_score = _score_text_orientation(r_img)
-            text_scores[ang] = t_score
+        # 2. Fast-path check: Is the image already upright (0°)?
+        f0 = _detect_upright_face_confidence(img_bgr)
+        t0 = _score_text_orientation(img_bgr)
 
         best_angle = 0
-        max_face_score = max(face_scores.values())
-
-        if max_face_score >= 0.40:
-            # Face found: pick the rotation that yields the highest face confidence
-            best_angle = max(face_scores.items(), key=lambda x: x[1])[0]
-            logger.info(f"[ORIENTATION] Best orientation determined by facial detection: {best_angle}° (conf: {max_face_score:.2f})")
+        if f0 >= 0.60:
+            # Face found upright at 0° with high confidence: no rotation needed!
+            best_angle = 0
+            logger.info(f"[ORIENTATION] Upright orientation verified at 0° (face conf: {f0:.2f})")
         else:
-            # No face detected: check text orientation if aspect ratio or text score is conclusive
-            # For IDs, landscape aspect ratio (w > h) is typical
-            landscape_angles = [ang for ang in [0, 180] if rot_imgs[ang].shape[1] >= rot_imgs[ang].shape[0]]
-            
-            if landscape_angles and not (rot_imgs[0].shape[1] >= rot_imgs[0].shape[0]):
-                # If original is portrait (tall) and rotated is landscape (wide), passport/ID is usually wide
-                best_angle = 90 if text_scores.get(90, 0) >= text_scores.get(270, 0) else 270
+            # Test other angles: 90° CW, 180°, 270° CW
+            rot_imgs = {
+                0: img_bgr,
+                90: cv2.rotate(img_bgr, cv2.ROTATE_90_CLOCKWISE),
+                180: cv2.rotate(img_bgr, cv2.ROTATE_180),
+                270: cv2.rotate(img_bgr, cv2.ROTATE_90_COUNTERCLOCKWISE)
+            }
+
+            face_scores = {0: f0}
+            text_scores = {0: t0}
+
+            for ang in [90, 180, 270]:
+                r_img = rot_imgs[ang]
+                face_scores[ang] = _detect_upright_face_confidence(r_img)
+                text_scores[ang] = _score_text_orientation(r_img)
+
+            max_face_score = max(face_scores.values())
+
+            if max_face_score >= 0.40:
+                best_angle = max(face_scores.items(), key=lambda x: x[1])[0]
+                logger.info(f"[ORIENTATION] Best orientation determined by facial detection: {best_angle}° (conf: {max_face_score:.2f})")
             else:
-                best_angle = max(text_scores.items(), key=lambda x: x[1])[0]
-            logger.info(f"[ORIENTATION] Orientation determined by text layout: {best_angle}°")
+                landscape_angles = [ang for ang in [0, 180] if rot_imgs[ang].shape[1] >= rot_imgs[ang].shape[0]]
+                if landscape_angles and not (rot_imgs[0].shape[1] >= rot_imgs[0].shape[0]):
+                    best_angle = 90 if text_scores.get(90, 0) >= text_scores.get(270, 0) else 270
+                else:
+                    best_angle = max(text_scores.items(), key=lambda x: x[1])[0]
+                logger.info(f"[ORIENTATION] Orientation determined by text layout: {best_angle}°")
+
+            del rot_imgs
 
         if best_angle != 0:
             applied_rotation = best_angle
@@ -126,7 +130,10 @@ def normalize_image_orientation(image_path: str) -> Tuple[str, int]:
                 full_rgb.close()
             logger.info(f"[ORIENTATION] Successfully normalized image orientation by {best_angle}° -> {image_path}")
 
-        del rot_imgs, img_bgr
+        if 'rot_imgs' in locals():
+            del rot_imgs
+        if 'img_bgr' in locals():
+            del img_bgr
         force_gc()
         return image_path, applied_rotation
 

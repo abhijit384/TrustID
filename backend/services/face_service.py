@@ -421,63 +421,9 @@ def detect_and_crop_document_face(
         validated_detections = []
 
         # -------------------------------------------------------------
-        # PATH B: TEST PROPOSED CANDIDATE PORTRAIT REGIONS
-        # -------------------------------------------------------------
-        candidates = _propose_candidate_regions(img_bgr, ai_box_coords=ai_box_coords)
-        for (cx, cy, cw, ch) in candidates:
-            pad_x = int(cw * 0.12)
-            pad_y = int(ch * 0.12)
-            x1 = max(0, cx - pad_x)
-            y1 = max(0, cy - pad_y)
-            x2 = min(w_img, cx + cw + pad_x)
-            y2 = min(h_img, cy + ch + pad_y)
-            cand_crop = img_bgr[y1:y2, x1:x2]
-            if cand_crop.size == 0 or cand_crop.shape[0] < 20 or cand_crop.shape[1] < 20:
-                continue
-
-            if _is_qr_or_barcode(cand_crop):
-                logger.debug(f"[FACE_ANALYSIS] Candidate at ({x1},{y1}) rejected: QR/Barcode detected.")
-                continue
-
-            cand_faces = _detect_faces_yunet(cand_crop, score_thresh=0.28)
-            if not cand_faces:
-                cand_enhanced = _enhance_contrast(cand_crop)
-                cand_faces = _detect_faces_yunet(cand_enhanced, score_thresh=0.25)
-                del cand_enhanced
-            if not cand_faces:
-                cand_faces = _detect_faces_rfb(cand_crop, conf_thresh=0.70)
-
-            for (score, (lfx, lfy, lfw, lfh)) in cand_faces:
-                if lfw < 12 or lfh < 12:
-                    continue
-                orig_fx = x1 + lfx
-                orig_fy = y1 + lfy
-                face_box = (orig_fx, orig_fy, lfw, lfh)
-                
-                # Check for QR / barcode at face coordinates
-                face_sample = img_bgr[orig_fy:orig_fy+lfh, orig_fx:orig_fx+lfw]
-                if _is_qr_or_barcode(face_sample):
-                    continue
-
-                portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box)
-                validated_detections.append({
-                    "score": score,
-                    "face_box": face_box,
-                    "portrait_box": portrait_box,
-                    "source": "candidate_region"
-                })
-
-        # -------------------------------------------------------------
-        # PATH A: FULL-PAGE FACE DETECTION
+        # FAST PATH: FULL-PAGE FACE DETECTION (YuNet Single Pass)
         # -------------------------------------------------------------
         full_faces = _detect_faces_yunet(img_bgr, score_thresh=0.28)
-        if not full_faces:
-            full_enhanced = _enhance_contrast(img_bgr)
-            full_faces = _detect_faces_yunet(full_enhanced, score_thresh=0.25)
-            del full_enhanced
-        if not full_faces:
-            full_faces = _detect_faces_rfb(img_bgr, conf_thresh=0.70)
-
         for (score, (sfx, sfy, sfw, sfh)) in full_faces:
             if sfw < 12 or sfh < 12:
                 continue
@@ -493,6 +439,79 @@ def detect_and_crop_document_face(
                 "portrait_box": portrait_box,
                 "source": "full_page"
             })
+
+        # -------------------------------------------------------------
+        # FALLBACK PATH: AI BOX & TARGETED CANDIDATE PORTRAIT REGIONS
+        # (Engaged only if full-page scan yields 0 faces, or to check AI box)
+        # -------------------------------------------------------------
+        if not validated_detections:
+            candidates = _propose_candidate_regions(img_bgr, ai_box_coords=ai_box_coords)
+            for (cx, cy, cw, ch) in candidates:
+                pad_x = int(cw * 0.12)
+                pad_y = int(ch * 0.12)
+                x1 = max(0, cx - pad_x)
+                y1 = max(0, cy - pad_y)
+                x2 = min(w_img, cx + cw + pad_x)
+                y2 = min(h_img, cy + ch + pad_y)
+                cand_crop = img_bgr[y1:y2, x1:x2]
+                if cand_crop.size == 0 or cand_crop.shape[0] < 20 or cand_crop.shape[1] < 20:
+                    continue
+
+                if _is_qr_or_barcode(cand_crop):
+                    continue
+
+                cand_faces = _detect_faces_yunet(cand_crop, score_thresh=0.28)
+                if not cand_faces:
+                    cand_enhanced = _enhance_contrast(cand_crop)
+                    cand_faces = _detect_faces_yunet(cand_enhanced, score_thresh=0.25)
+                    del cand_enhanced
+                if not cand_faces:
+                    cand_faces = _detect_faces_rfb(cand_crop, conf_thresh=0.70)
+
+                for (score, (lfx, lfy, lfw, lfh)) in cand_faces:
+                    if lfw < 12 or lfh < 12:
+                        continue
+                    orig_fx = x1 + lfx
+                    orig_fy = y1 + lfy
+                    face_box = (orig_fx, orig_fy, lfw, lfh)
+                    
+                    face_sample = img_bgr[orig_fy:orig_fy+lfh, orig_fx:orig_fx+lfw]
+                    if _is_qr_or_barcode(face_sample):
+                        continue
+
+                    portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box)
+                    validated_detections.append({
+                        "score": score,
+                        "face_box": face_box,
+                        "portrait_box": portrait_box,
+                        "source": "candidate_region"
+                    })
+
+        # -------------------------------------------------------------
+        # DEEP FALLBACK PATH: FULL-PAGE CONTRAST ENHANCEMENT & RFB-320
+        # -------------------------------------------------------------
+        if not validated_detections:
+            full_enhanced = _enhance_contrast(img_bgr)
+            fallback_faces = _detect_faces_yunet(full_enhanced, score_thresh=0.25)
+            del full_enhanced
+            if not fallback_faces:
+                fallback_faces = _detect_faces_rfb(img_bgr, conf_thresh=0.70)
+
+            for (score, (sfx, sfy, sfw, sfh)) in fallback_faces:
+                if sfw < 12 or sfh < 12:
+                    continue
+                face_box = (sfx, sfy, sfw, sfh)
+                crop_test = img_bgr[sfy:sfy+sfh, sfx:sfx+sfw]
+                if _is_qr_or_barcode(crop_test):
+                    continue
+
+                portrait_box = _expand_face_to_portrait_region(w_img, h_img, face_box)
+                validated_detections.append({
+                    "score": score,
+                    "face_box": face_box,
+                    "portrait_box": portrait_box,
+                    "source": "fallback_enhancement"
+                })
 
         # -------------------------------------------------------------
         # MERGE & DEDUPLICATE DETECTIONS (NMS + PROXIMITY CLUSTERING)

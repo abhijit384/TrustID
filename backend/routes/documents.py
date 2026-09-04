@@ -409,6 +409,7 @@ def analyze_screening(
             db.commit()
 
             # Self-healing check: If the stored file is actually a PDF, render page 1 to JPEG
+            _t_prep_start = _time.time()
             try:
                 with open(doc_path, "rb") as f_check:
                     header_bytes = f_check.read(16)
@@ -432,6 +433,7 @@ def analyze_screening(
                 normalize_image_orientation(doc_path)
             except Exception as norm_err:
                 logger.warning(f"[ANALYSIS] Orientation normalization note: {norm_err}")
+            _t_prep_end = _time.time()
 
             # 1. OCR — single clean call, no field reconciliation yet (Gemini not available yet)
             _t_ocr_start = _time.time()
@@ -464,6 +466,7 @@ def analyze_screening(
             print(f"[GEMINI] GEMINI COMPLETED [{_t_gem_end - _t_gem_start:.1f}s]")
 
             # 3. Full OCR reconciliation with Gemini data (reuses cached raw text — no second PaddleOCR run)
+            _t_field_start = _time.time()
             ocr_result = extract_document_ocr(doc_path, gemini_data=gemini_res, cached_raw_text=ocr_candidate_text)
 
             for field in ocr_result.get("fields", []):
@@ -497,8 +500,10 @@ def analyze_screening(
                     status=check["status"],
                     message=check["message"]
                 ))
+            _t_field_end = _time.time()
 
             # 5. Tampering Analysis
+            _t_tamp_start = _time.time()
             tamp_result = run_tampering_analysis(doc_path, gemini_data=gemini_res)
             for ind in tamp_result.get("indicators", []):
                 db.add(TamperingResult(
@@ -507,6 +512,7 @@ def analyze_screening(
                     confidence=ind.get("confidence", 0.5),
                     region_data=ind.get("region_data")
                 ))
+            _t_tamp_end = _time.time()
 
             # 6. Document Face Analysis (Always run on ID's embedded face)
             _t_face_start = _time.time()
@@ -894,15 +900,39 @@ def analyze_screening(
             critical_conflicts_val = f"{len(critical_conflicts)} Unresolved" if len(critical_conflicts) > 0 else "None"
             evidence_sufficiency_val = "Insufficient" if is_true_inconclusive else ("Non-Document Input" if is_non_document else "Sufficient")
 
+            # 7. Finalize Database Records & Stage Timing
+            _t_db_start = _time.time()
+            log_memory("before_result_save", screening.screening_id)
+            db.add(AuditLog(
+                user_id=current_user.id,
+                screening_id=screening.id,
+                action="Document Analysis Completed",
+                details=f"Analysis completed in {duration_sec}s. Score {score} ({level}). Auth: {screening.authenticity_classification}.",
+                timestamp=datetime.datetime.utcnow()
+            ))
+            db.commit()
+            _t_db_end = _time.time()
+
             # Stage timing summary
             _t_total = _time.time() - _t0
             timing_summary = {
-                "ocr_sec": round(_t_ocr_end - _t_ocr_start, 1),
-                "gemini_sec": round(_t_gem_end - _t_gem_start, 1),
-                "face_sec": round(_t_face_end - _t_face_start, 1),
-                "total_sec": round(_t_total, 1)
+                "preprocessing_sec": round(_t_prep_end - _t_prep_start, 2),
+                "ocr_sec": round(_t_ocr_end - _t_ocr_start, 2),
+                "gemini_sec": round(_t_gem_end - _t_gem_start, 2),
+                "field_extraction_sec": round(_t_field_end - _t_field_start, 2),
+                "tampering_sec": round(_t_tamp_end - _t_tamp_start, 2),
+                "face_sec": round(_t_face_end - _t_face_start, 2),
+                "database_sec": round(_t_db_end - _t_db_start, 2),
+                "total_sec": round(_t_total, 2)
             }
-            print(f"[TIMING] OCR={timing_summary['ocr_sec']}s Gemini={timing_summary['gemini_sec']}s Face={timing_summary['face_sec']}s Total={timing_summary['total_sec']}s")
+            print(f"[TIMING] prep={timing_summary['preprocessing_sec']}s "
+                  f"OCR={timing_summary['ocr_sec']}s "
+                  f"Gemini={timing_summary['gemini_sec']}s "
+                  f"fields={timing_summary['field_extraction_sec']}s "
+                  f"tampering={timing_summary['tampering_sec']}s "
+                  f"face={timing_summary['face_sec']}s "
+                  f"DB={timing_summary['database_sec']}s "
+                  f"TOTAL={timing_summary['total_sec']}s")
 
             decision_trace = {
                 "ocr_quality": ocr_quality_val,
@@ -964,14 +994,6 @@ def analyze_screening(
                 }
             }
 
-            log_memory("before_result_save", screening.screening_id)
-            db.add(AuditLog(
-                user_id=current_user.id,
-                screening_id=screening.id,
-                action="Document Analysis Completed",
-                details=f"Analysis completed in {duration_sec}s. Score {score} ({level}). Auth: {screening.authenticity_classification}.",
-                timestamp=datetime.datetime.utcnow()
-            ))
             db.commit()
             print(f"[DATABASE] RESULT SAVED")
             print(f"[ANALYSIS] ANALYSIS COMPLETED: {screening.screening_id}")
