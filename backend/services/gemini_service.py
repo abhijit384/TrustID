@@ -608,12 +608,12 @@ Return strictly valid JSON with this structure:
     last_err = None
     response = None
 
-    env_model = os.getenv("GEMINI_MODEL")
+    env_model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     candidate_models = []
     if env_model:
         candidate_models.append(env_model)
-    candidate_models.extend(["gemini-2.0-flash", "gemini-2.0-flash-lite", "gemini-1.5-flash"])
-    candidate_models = list(dict.fromkeys(candidate_models))
+    candidate_models.extend(["gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"])
+    candidate_models = list(dict.fromkeys([m for m in candidate_models if m]))
 
     config_args = {
         "temperature": 0.1,
