@@ -16,6 +16,7 @@ from backend.services.ocr_service import extract_document_ocr
 from backend.services.validation_service import validate_document_rules, compare_mrz_consistency
 from backend.services.tampering_service import run_tampering_analysis
 from backend.services.face_service import detect_and_crop_document_face, compute_face_comparison_similarity, analyze_photo_authenticity, check_multiple_identities
+from backend.services.image_normalization import normalize_image_orientation
 from backend.services.memory_utils import log_memory, force_gc
 
 import threading
@@ -255,6 +256,12 @@ async def create_screening_upload(
 
         print(f"[UPLOAD] FILE RECEIVED: {original_name}")
 
+        # Auto-orient & normalize image orientation immediately on upload
+        try:
+            normalize_image_orientation(doc_path)
+        except Exception as norm_err:
+            logger.warning(f"[UPLOAD] Orientation normalization note: {norm_err}")
+
         # Calculate SHA-256
         doc_hash = calculate_sha256_from_bytes(file_bytes)
 
@@ -416,6 +423,12 @@ def analyze_screening(
                     del pdf
             except Exception as conv_err:
                 print(f"[CONVERT] Self-healing PDF conversion note: {conv_err}")
+
+            # 0. Normalize image orientation (EXIF + multi-angle face/text alignment)
+            try:
+                normalize_image_orientation(doc_path)
+            except Exception as norm_err:
+                logger.warning(f"[ANALYSIS] Orientation normalization note: {norm_err}")
 
             # 1. Extract preliminary OCR text
             initial_ocr = extract_document_ocr(doc_path)
@@ -714,9 +727,9 @@ def analyze_screening(
             tamp_result["tampering_score"] = max(tamp_result.get("tampering_score", 0.0), 50.0)
             tamp_result["status"] = "Tampering Anomaly Detected"
 
-        # Final Harmonized Authenticity and Risk Determination
+        # Final Harmonized Authenticity and Risk Determination (3-Stage Explicit Decision)
         initial_auth_str = str(initial_auth).lower()
-        explicit_fake_auth = ("fake" in initial_auth_str or "tamper" in initial_auth_str or "counterfeit" in initial_auth_str or "sample" in initial_auth_str or "specimen" in initial_auth_str) and not any(neg in initial_auth_str for neg in ["no ", "not ", "never", "non-fake", "genuine"])
+        explicit_fake_auth = ("fake" in initial_auth_str or "tamper" in initial_auth_str or "counterfeit" in initial_auth_str) and not any(neg in initial_auth_str for neg in ["no ", "not ", "never", "non-fake", "genuine"])
         
         gem_tamp = gemini_res.get("tampering_analysis", {})
         gem_tamp_st = str(gem_tamp.get("status", "")).lower()
@@ -735,7 +748,6 @@ def analyze_screening(
             multiple_faces_in_portrait or
             multi_id_check.get("multiple_identities_detected") or
             is_blacklisted_doc or
-            is_sample_specimen or
             is_dob_fraud or
             has_gemini_tampering or
             gemini_res.get("mrz_analysis", {}).get("status") == "Mismatch" or
@@ -753,14 +765,17 @@ def analyze_screening(
         is_poor_quality = (doc_quality.get("status") or "").capitalize() == "Poor"
         detected_fields_cnt = len([f for f in ocr_result.get("fields", []) if f.get("field_value_demo") != "Not detected"])
         
-        is_invalid_structure = (
-            (detected_fields_cnt == 0 and not doc_face_detected and not any(c.get("status") == "Passed" for c in val_result.get("checks", []))) or
-            is_sample_specimen or
-            ("invalid" in initial_auth_str and not has_tampering_evidence)
-        )
+        # 1. SCREENABILITY CHECK: Is it a recognizable/screenable identity document?
+        # Non-document = 0 fields detected AND no face detected AND 0 passed checks AND empty/unparseable OCR text AND NOT a specimen
+        is_non_document = (
+            (detected_fields_cnt == 0 and not doc_face_detected and not any(c.get("status") == "Passed" for c in val_result.get("checks", [])) and len(ocr_candidate_text.strip()) < 10) or
+            (str(detected_type).lower() in ["not a document", "random photo", "unsupported file", "invalid file", "non-document"] and not is_sample_specimen)
+        ) and not is_sample_specimen
 
+        # 2. TRUE INCONCLUSIVE CHECK: Valid document, but evidence is insufficient or quality is too low
         is_true_inconclusive = (
-            not is_invalid_structure and
+            not is_non_document and
+            not is_sample_specimen and
             not has_tampering_evidence and (
                 ("inconclusive" in initial_auth_str and not any(k in initial_auth_str for k in ["real", "fake", "tamper", "sample"])) or
                 (is_poor_quality and detected_fields_cnt < 3) or
@@ -769,28 +784,35 @@ def analyze_screening(
         )
 
         auth_conf = None
-        if is_invalid_structure:
+        if is_non_document:
             overall_document_status = "INVALID DOCUMENT"
             auth_result = "INVALID DOCUMENT"
             score = 50.0
             level = "Medium"
-            border_decision = "REJECT / INVALID CREDENTIAL"
+            border_decision = "REJECT / NON-DOCUMENT INPUT"
             border_decision_badge = "medium"
             auth_conf = None
-            if is_sample_specimen:
-                auth_reasons = [
-                    "Invalid Credential: Document is an unissued specimen/sample template marked with 'SAMPLE' or placeholder demonstration data.",
-                    "Demonstration and training exemplar cards cannot be accepted as valid identity credentials."
-                ]
-            else:
-                auth_reasons = [
-                    "The submitted file/document does not meet the supported identity document structural requirements or contains unparseable formatting."
-                ]
-            supporting_assessment = "The submitted document fails fundamental identity credential structural validation."
+            auth_reasons = [
+                "Input does not appear to be a supported identity credential or screenable document."
+            ]
+            supporting_assessment = "The uploaded file does not meet identity credential structural requirements."
+        elif is_sample_specimen:
+            overall_document_status = "FAKE DOCUMENT"
+            auth_result = "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
+            score = 90.0
+            level = "High"
+            border_decision = "REJECT / SPECIMEN TEMPLATE"
+            border_decision_badge = "high"
+            auth_conf = 0.99
+            auth_reasons = [
+                "Document identified as a specimen/sample/demonstration document rather than an authentic original credential.",
+                "Demonstration, training, and specimen exemplar cards cannot be accepted as valid identity credentials."
+            ]
+            supporting_assessment = "Document is an unissued specimen, sample, or placeholder demonstration template."
         elif has_tampering_evidence:
             overall_document_status = "FAKE DOCUMENT"
             auth_result = "POTENTIALLY SUSPICIOUS / POTENTIALLY FAKE"
-            score = max(score, 75.0 if not (is_blacklisted_doc or is_sample_specimen) else 90.0)
+            score = max(score, 75.0 if not is_blacklisted_doc else 90.0)
             level = "High"
             border_decision = "DETAIN / ENFORCEMENT ACTION"
             border_decision_badge = "high"

@@ -194,25 +194,16 @@ def validate_document_rules(fields_dict: Dict[str, str], gemini_data: Optional[D
     ocr_raw = str(gemini_data.get("raw_ocr_text", "")).upper() if gemini_data else ""
     gem_reasons_str = " ".join(gemini_data.get("authenticity_assessment", {}).get("reasons", [])).upper() if gemini_data else ""
     gem_expl_str = str(gemini_data.get("explanation", "")).upper() if gemini_data else ""
-    is_sample_specimen = (
-        "SAMPLE" in name_upper
-        or "SPECIMEN" in name_upper
-        or "JOHN DOE" in name_upper
-        or "JANE DOE" in name_upper
-        or "N99999999" in clean_doc_no
-        or "999999" in clean_doc_no
-        or "SAMPLE" in ocr_raw
-        or "SPECIMEN" in ocr_raw
-        or "SAMPLE" in gem_reasons_str
-        or "SPECIMEN" in gem_reasons_str
-        or "SAMPLE" in gem_expl_str
-        or "SPECIMEN" in gem_expl_str
-    )
+    combined_text = f"{name_upper} {clean_doc_no} {ocr_raw} {gem_reasons_str} {gem_expl_str}"
+    
+    specimen_kws = ["SPECIMEN", "SAMPLE", "DEMO", "TEST", "NOT VALID", "FOR DEMONSTRATION", "MOCK", "TRAINING", "VOID", "SAMPLE ONLY", "CONNOR SAMPLE", "JOHN DOE", "JANE DOE", "N99999999"]
+    is_sample_specimen = any(kw in combined_text for kw in specimen_kws)
+    
     if is_sample_specimen:
         checks.append({
             "check_name": "Specimen / Sample Verification",
             "status": "Failed",
-            "message": "CRITICAL ANOMALY: Document is an official specimen, sample, or training exemplar template. It is legally invalid for actual identity verification."
+            "message": "CRITICAL ANOMALY: Document is explicitly identified as a specimen, sample, demo, or training exemplar template rather than an authentic original credential."
         })
     else:
         checks.append({
